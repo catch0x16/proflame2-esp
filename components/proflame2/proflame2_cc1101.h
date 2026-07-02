@@ -1,12 +1,13 @@
 #pragma once
 
-#include "esphome.h"
 #include "esphome/core/component.h"
+#include "esphome/core/hal.h"
 #include "esphome/components/spi/spi.h"
 #include "esphome/components/switch/switch.h"
-#include "esphome/components/light/light_output.h"
-#include "esphome/components/fan/fan.h"
 #include "esphome/components/number/number.h"
+
+#include <algorithm>
+#include <cstring>
 
 namespace esphome {
 namespace proflame2 {
@@ -54,10 +55,13 @@ static const uint8_t CC1101_TEST2     = 0x2C;
 static const uint8_t CC1101_TEST1     = 0x2D;
 static const uint8_t CC1101_TEST0     = 0x2E;
 
-// Additional registers needed for TX state management
-static const uint8_t CC1101_MARCSTATE = 0x35;  // Status register (read with 0xC0)
-static const uint8_t CC1101_TXBYTES   = 0x3A;  // Status register (read with 0xC0)
-static const uint8_t CC1101_PATABLE   = 0x3E;  // PA table
+// Status registers (read with 0xC0)
+static const uint8_t CC1101_PARTNUM   = 0x30;
+static const uint8_t CC1101_VERSION   = 0x31;
+static const uint8_t CC1101_MARCSTATE = 0x35;
+static const uint8_t CC1101_TXBYTES   = 0x3A;
+static const uint8_t CC1101_PATABLE   = 0x3E;
+static const uint8_t CC1101_TXFIFO    = 0x3F;
 
 // CC1101 Strobe commands
 static const uint8_t CC1101_SRES    = 0x30;
@@ -67,6 +71,8 @@ static const uint8_t CC1101_SCAL    = 0x33;
 static const uint8_t CC1101_SRX     = 0x34;
 static const uint8_t CC1101_STX     = 0x35;
 static const uint8_t CC1101_SIDLE   = 0x36;
+static const uint8_t CC1101_SFRX    = 0x3A;  // Flush RX FIFO
+static const uint8_t CC1101_SFTX    = 0x3B;  // Flush TX FIFO
 
 // ProFlame 2 packet structure
 struct ProFlame2Command {
@@ -75,7 +81,7 @@ struct ProFlame2Command {
     uint8_t light_level; // 0-6
     bool thermostat;
     bool power;
-    
+
     // Command Word 2: Front | Fan[3] | Aux | Flame[3]
     bool front_flame;
     uint8_t fan_level;   // 0-6
@@ -83,8 +89,8 @@ struct ProFlame2Command {
     uint8_t flame_level; // 0-6
 };
 
-class ProFlame2Component : public Component, 
-                          public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, 
+class ProFlame2Component : public Component,
+                          public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST,
                                                spi::CLOCK_POLARITY_LOW,
                                                spi::CLOCK_PHASE_LEADING,
                                                // Start conservative; CC1101 is happy faster, but 1MHz helps
@@ -92,16 +98,25 @@ class ProFlame2Component : public Component,
                                                spi::DATA_RATE_1MHZ> {
  public:
     ProFlame2Component() {}
-    
+
     void setup() override;
     void loop() override;
     void dump_config() override;
     float get_setup_priority() const override { return setup_priority::HARDWARE; }
-    
+
     // Configuration methods
     void set_serial_number(uint32_t serial) { this->serial_number_ = serial; }
     void set_gdo0_pin(GPIOPin *pin) { this->gdo0_pin_ = pin; }
-    
+    void set_frequency(float mhz) { this->frequency_mhz_ = mhz; }
+    // Error-detection word constants. These are device specific: derive them from an
+    // rtl_433 capture of the paired remote (see protocol/README.md).
+    void set_checksum_constants(uint8_t c1, uint8_t d1, uint8_t c2, uint8_t d2) {
+        this->chk_c1_ = c1 & 0x0F;
+        this->chk_d1_ = d1 & 0x0F;
+        this->chk_c2_ = c2 & 0x0F;
+        this->chk_d2_ = d2 & 0x0F;
+    }
+
     // Control methods
     void set_power(bool state);
     void set_pilot_mode(bool cpi_mode);
@@ -111,76 +126,76 @@ class ProFlame2Component : public Component,
     void set_aux_power(bool state);
     void set_front_flame(bool state);
     void set_thermostat(bool state);
-    
+
     // Switch components
     void set_power_switch(switch_::Switch *sw) { this->power_switch_ = sw; }
     void set_pilot_switch(switch_::Switch *sw) { this->pilot_switch_ = sw; }
     void set_aux_switch(switch_::Switch *sw) { this->aux_switch_ = sw; }
     void set_front_switch(switch_::Switch *sw) { this->front_switch_ = sw; }
     void set_thermostat_switch(switch_::Switch *sw) { this->thermostat_switch_ = sw; }
-    
+
     // Number components for levels
     void set_flame_number(number::Number *num) { this->flame_number_ = num; }
     void set_fan_number(number::Number *num) { this->fan_number_ = num; }
     void set_light_number(number::Number *num) { this->light_number_ = num; }
-    
+
     // DEBUG FUNCTIONS (public for testing)
     void debug_minimal_tx();
     void debug_check_config();
-    
 
-    // moved from protected for debugging in yaml
+    // Public for debugging in yaml lambdas
     void send_strobe(uint8_t strobe);
     void write_register(uint8_t reg, uint8_t value);
     uint8_t read_status_register(uint8_t reg);
     uint8_t read_register(uint8_t reg);
-   
+
     ProFlame2Command current_state_{};
+    // Queue the current state for transmission (starts immediately if radio is free).
     void transmit_command();
     void build_packet(uint8_t *packet);
-    void encode_manchester(uint8_t *input, uint8_t *output, size_t input_len);
+    void encode_manchester(const uint8_t *input, uint8_t *output, size_t input_bits);
+    uint8_t calculate_checksum(uint8_t cmd_byte, uint8_t c_const, uint8_t d_const);
 
  protected:
-    // CC1101 communication methods
-    // void write_register(uint8_t reg, uint8_t value);
-    // uint8_t read_register(uint8_t reg);
-    // uint8_t read_status_register(uint8_t reg);
-    // void send_strobe(uint8_t strobe);
     void reset_cc1101();
     void configure_cc1101();
-    
-    // ProFlame 2 protocol methods
-    // void build_packet(uint8_t *packet);
-    // void encode_manchester(uint8_t *input, uint8_t *output, size_t input_len);
-    uint8_t calculate_checksum(uint8_t cmd_byte, uint8_t c_const, uint8_t d_const);
-    uint8_t calculate_parity(uint16_t data);
-    // void transmit_command();
+
+    uint8_t calculate_parity(uint8_t data, uint8_t pad);
+
+    // Build a single on-air burst: 5x Manchester-encoded packets separated by 12 zero bits.
+    // This matches the Proflame 2 burst structure described in FCC docs / smartfire reference.
+    size_t build_tx_burst_(const uint8_t *encoded, size_t encoded_bits,
+                           uint8_t *out, size_t out_max_bytes,
+                           uint8_t repeats = 5, uint8_t separator_zero_bits = 12);
 
     // Non-blocking TX state machine
+    void try_start_pending_tx_();
     void start_tx_(const uint8_t *data, size_t len);
     void service_tx_();
-    
+
     // Hardware pins
     GPIOPin *gdo0_pin_{nullptr};
-    
-    // Configuration
-    uint32_t serial_number_{0x12345678};  // Default serial, should be configured
-    
-    // Current state
 
-    // ProFlame2Command current_state_{};
-    
+    // Configuration
+    uint32_t serial_number_{0x12345678};  // 24 bits used; must be cloned from the paired remote
+    float frequency_mhz_{314.973f};
+    // Defaults are the smartfire reference device's constants; override per device.
+    uint8_t chk_c1_{0x0D};
+    uint8_t chk_d1_{0x00};
+    uint8_t chk_c2_{0x00};
+    uint8_t chk_d2_{0x07};
+
     // Component references
     switch_::Switch *power_switch_{nullptr};
     switch_::Switch *pilot_switch_{nullptr};
     switch_::Switch *aux_switch_{nullptr};
     switch_::Switch *front_switch_{nullptr};
     switch_::Switch *thermostat_switch_{nullptr};
-    
+
     number::Number *flame_number_{nullptr};
     number::Number *fan_number_{nullptr};
     number::Number *light_number_{nullptr};
-    
+
     // Timing
     uint32_t last_transmission_{0};
     static const uint32_t MIN_TRANSMISSION_INTERVAL = 200;  // ms between transmissions
@@ -188,7 +203,7 @@ class ProFlame2Component : public Component,
     // TX state
     enum TxState : uint8_t { TX_IDLE = 0, TX_RUNNING = 1, TX_ERROR = 2 };
     TxState tx_state_{TX_IDLE};
-    uint8_t tx_buf_[160]{};     // enough for our current frame
+    uint8_t tx_buf_[220]{};     // burst buffer (5 packets + separators = 120 bytes)
     size_t tx_len_{0};
     size_t tx_pos_{0};
     uint32_t tx_start_ms_{0};
@@ -223,6 +238,28 @@ class ProFlame2AuxSwitch : public switch_::Switch, public Component {
     void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
     void write_state(bool state) override {
         this->parent_->set_aux_power(state);
+        this->publish_state(state);
+    }
+ protected:
+    ProFlame2Component *parent_;
+};
+
+class ProFlame2FrontSwitch : public switch_::Switch, public Component {
+ public:
+    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
+    void write_state(bool state) override {
+        this->parent_->set_front_flame(state);
+        this->publish_state(state);
+    }
+ protected:
+    ProFlame2Component *parent_;
+};
+
+class ProFlame2ThermostatSwitch : public switch_::Switch, public Component {
+ public:
+    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
+    void write_state(bool state) override {
+        this->parent_->set_thermostat(state);
         this->publish_state(state);
     }
  protected:

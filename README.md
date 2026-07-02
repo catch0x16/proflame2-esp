@@ -16,14 +16,16 @@ Control your ProFlame 2 fireplace system using an ESP32 and CC1101 RF module thr
 ## Hardware Requirements
 
 - **ESP32 Development Board** (ESP32-WROOM-32 recommended)
-- **CC1101 RF Module** (433MHz version)
+- **CC1101 RF Module** (315 MHz capable - ProFlame 2 transmits at ~315 MHz)
 - **Jumper wires** for connections
 - **3.3V power supply** (USB power from ESP32 is sufficient)
 
 ### Compatible CC1101 Modules
 - E07-M1101D (recommended)
 - Generic CC1101 modules from AliExpress/eBay
-- Ensure it's the 433MHz version (not 868MHz or 915MHz)
+- The ProFlame 2 protocol uses **314.973 MHz**, so prefer a 315 MHz module.
+  A "433 MHz" module will usually still work (the CC1101 chip tunes 300-348 MHz)
+  but its antenna matching network is not optimal at 315 MHz - expect reduced range.
 
 ## Wiring Diagram
 
@@ -68,46 +70,39 @@ GPIO4   <-->   GDO0 [Optional - for future RX support]
 
 ## Installation
 
-### Method 1: Custom Component (Local)
+### Method 1: External Component from GitHub (Recommended)
 
-1. **Create custom_components directory** in your ESPHome configuration folder:
+```yaml
+external_components:
+  - source: github://j2deen/proflame2-esp@main
+    components: [proflame2]
+```
+
+### Method 2: Local Component
+
+1. **Copy the `components/proflame2` directory** next to your ESPHome YAML:
    ```bash
-   mkdir -p ~/esphome/custom_components/proflame2
+   cp -r components ~/esphome/
    ```
 
-2. **Copy component files**:
-   ```bash
-   # Copy the files to the custom_components directory
-   cp proflame2_cc1101.h ~/esphome/custom_components/proflame2/
-   cp proflame2_cc1101.cpp ~/esphome/custom_components/proflame2/
-   cp __init__.py ~/esphome/custom_components/proflame2/
+2. **Reference it in your configuration**:
+   ```yaml
+   external_components:
+     - source:
+         type: local
+         path: ./components
+       components: [proflame2]
    ```
 
 3. **Create your ESPHome configuration**:
    ```bash
    cp proflame2_fireplace.yaml ~/esphome/my_fireplace.yaml
    ```
-
-4. **Edit the configuration** to match your setup:
-   - Update WiFi credentials
-   - Set your API encryption key
-   - Adjust pin assignments if needed
-   - Set the correct serial number (see Serial Number section)
-
-5. **Compile and upload**:
+   Then edit WiFi credentials, API key, pin assignments, your serial number,
+   and your checksum constants (see below), and:
    ```bash
    esphome run my_fireplace.yaml
    ```
-
-### Method 2: External Component (Git)
-
-Once published, you can use:
-
-```yaml
-external_components:
-  - source: github://yourusername/esphome-proflame2@main
-    components: [proflame2]
-```
 
 ## Configuration
 
@@ -115,22 +110,57 @@ external_components:
 
 ```yaml
 proflame2:
-  cs_pin: GPIO5           # Required: CC1101 chip select
-  gdo0_pin: GPIO4        # Optional: For future RX support
-  serial_number: 0x12345678  # Your remote's serial number
-  
+  cs_pin: GPIO5              # Required: CC1101 chip select
+  gdo0_pin: GPIO4            # Optional: For future RX support
+  serial_number: 0xAA9402    # Your remote's serial number (24 bits)
+  frequency: 314.973MHz      # Optional (default shown)
+  # Device-specific error-detection constants - REQUIRED for the fireplace to
+  # accept commands. See "Checksum Constants" below for how to derive yours.
+  checksum_c1: 0xF
+  checksum_d1: 0xE
+  checksum_c2: 0xE
+  checksum_d2: 0x2
+
   power:
     name: "Fireplace Power"
-    
+
+  thermostat:
+    name: "Thermostat Mode"
+
+  front:
+    name: "Front Flame"
+
   flame:
     name: "Flame Height"
-    
+
   fan:
     name: "Fan Speed"
-    
+
   light:
     name: "Light Level"
 ```
+
+### Checksum Constants (IMPORTANT)
+
+Each ProFlame 2 packet ends with two error-detection words computed from the
+command words using four 4-bit constants (C1, D1, C2, D2). **These constants
+are unique per remote** - with the wrong ones the fireplace silently ignores
+every command, even if the serial number is correct.
+
+Derive them from a single rtl_433 capture of your remote (`rtl_433 -f 315M -R 207 -F json`),
+which reports `cmd1`, `err1`, `cmd2`, `err2`. With `h`/`l` the high/low nibble
+of a command byte and `X`/`Y` the high/low nibble of its error byte:
+
+```
+C = X ^ ((h << 1) & 0xF) ^ h ^ ((l << 1) & 0xF)
+D = Y ^ h ^ l
+```
+
+Apply that to the `cmd1`/`err1` pair to get `checksum_c1`/`checksum_d1`, and to
+the `cmd2`/`err2` pair to get `checksum_c2`/`checksum_d2`. Example: remote
+`0xAA9402` sent `cmd1=0x02, err1=0xBC` -> C1 = 0xB ^ 0 ^ 0 ^ 0x4 = 0xF,
+D1 = 0xC ^ 0 ^ 0x2 = 0xE. Verify against a second capture with a different
+command if you can.
 
 ### Full Configuration Example
 
@@ -220,12 +250,12 @@ automation:
 1. **Check wiring** - Ensure all SPI connections are correct
 2. **Verify serial number** - Must match paired remote or be freshly paired
 3. **Check logs** - `esphome logs my_fireplace.yaml`
-4. **Verify frequency** - Some regions use 315MHz instead of 433MHz
+4. **Verify checksum constants** - wrong C/D constants are the #1 cause of "no response" (see Checksum Constants)
 
 ### Intermittent control
 1. **Antenna** - Ensure CC1101 antenna is connected and positioned well
 2. **Distance** - Move ESP32 closer to fireplace
-3. **Interference** - Check for other 433MHz devices
+3. **Interference** - Check for other 315MHz devices (garage doors, tire sensors)
 
 ### Can't compile
 1. **ESPHome version** - Ensure you're using ESPHome 2023.12.0 or newer
@@ -245,12 +275,33 @@ automation:
 ## Protocol Details
 
 The ProFlame 2 uses:
-- **Frequency**: 314.973 MHz (some models use 315 MHz or 433 MHz)
+- **Frequency**: 314.973 MHz per the FCC filing (captured remotes measure ~315.07 MHz;
+  OOK receivers are wide enough that either works - `frequency:` is configurable)
 - **Modulation**: OOK (On-Off Keying)
-- **Baud Rate**: 2400
-- **Encoding**: Thomas Manchester
-- **Packet**: 7 words × 13 bits = 91 bits total
-- **Checksum**: Nibble-based XOR with constants
+- **Baud Rate**: 2400 baud for the *Manchester-encoded* on-air bits (~416 us/bit)
+- **Encoding**: Thomas Manchester variant (0->01, 1->10, sync->11)
+- **Packet**: 7 words x 13 bits = 91 bits, encoded to 182 bits; each burst sends
+  5 identical packets separated by 12 zero bits (~395 ms total)
+- **Word format**: sync, start guard (1), 8 data bits, padding bit (1 in word 1
+  only), parity over data+padding, end guard (1)
+- **Checksum**: Nibble-based XOR with **device-specific** constants (see
+  "Checksum Constants" above)
+
+### v2.0 protocol/driver fixes (July 2026)
+
+Version 2.0 fixes several bugs that each prevented the fireplace from accepting
+any command, all verified against SDR captures of a real remote:
+
+- Packet words were missing the start guard bit and misplaced the padding bit
+  (the corrected builder reproduces the smartfire reference bitstring exactly)
+- Checksum constants are now configurable per device (they were hardcoded to
+  another remote's values)
+- Manchester encoder overflowed its output buffer (stack corruption)
+- CC1101 data rate was 1200 baud instead of 2400 (MDMCFG4 0xF5 -> 0xF6)
+- SFTX/SFRX strobes were swapped, so the TX FIFO was never flushed
+- The OOK PA table momentarily set the "0" symbol to full carrier power
+- Rapid state changes were silently dropped by the rate limiter (now queued)
+- Removed `esphome.h` include (breaks modern ESPHome external components)
 
 ## Advanced Features
 

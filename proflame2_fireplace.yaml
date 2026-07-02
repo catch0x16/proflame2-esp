@@ -35,7 +35,18 @@ proflame2:
   id: my_fireplace
   cs_pin: GPIO27
   gdo0_pin: GPIO25
-  serial_number: 0xAA9802
+  # Serial number cloned from your remote (24 bits). Capture it with rtl_433:
+  #   rtl_433 -f 315M -R 207 -F json
+  serial_number: 0xAA9402
+  frequency: 314.973MHz
+  # Error-detection constants are DEVICE SPECIFIC - the fireplace ignores every
+  # command if these don't match your remote. Derive them from a single rtl_433
+  # capture of your remote (see README "Checksum Constants"). These values are
+  # for remote 0xAA9402.
+  checksum_c1: 0xF
+  checksum_d1: 0xE
+  checksum_c2: 0xE
+  checksum_d2: 0x2
 
   power:
     name: "Fireplace Power"
@@ -59,6 +70,19 @@ proflame2:
     name: "Fireplace Fan Speed"
     icon: "mdi:fan"
     mode: slider
+
+  light:
+    name: "Fireplace Light Level"
+    icon: "mdi:lightbulb"
+    mode: slider
+
+  front:
+    name: "Fireplace Front Flame"
+    icon: "mdi:fire"
+
+  thermostat:
+    name: "Fireplace Thermostat Mode"
+    icon: "mdi:thermostat"
 
 sensor:
   - platform: wifi_signal
