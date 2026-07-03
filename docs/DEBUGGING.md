@@ -97,9 +97,9 @@ The information is right; the RF link to the *fireplace's* receiver isn't.
    remote still works, your cloned serial is paired; if you changed serials,
    re-pair (LEARN button on the IFC board).
 4. **Watch for the echo**: the receiver echoes accepted commands back over RF.
-   With rtl_433 running you should see a second identical decode ~immediately
-   after the ESP's burst. Echo present = fireplace accepted it (any remaining
-   problem is fireplace-side, e.g. pilot mode, valve).
+   `python3 tools/pf2_monitor.py` flags it automatically as `ECHO (receiver
+   ACK)`. Echo present = fireplace accepted the command (any remaining problem
+   is fireplace-side, e.g. pilot mode, valve).
 
 ### Commands work but are occasionally missed
 
@@ -114,8 +114,8 @@ The information is right; the RF link to the *fireplace's* receiver isn't.
 For anything you can't resolve, capture:
 
 ```bash
-rtl_433 -f 315M -R 207 -F json -A -S all   # decodes + pulse analysis + raw .cu8 samples
-esphome logs proflame2_test.yaml | tee esp.log   # VERBOSE component logs
+tools/pf2_capture.sh bug-report-1                 # decodes + raw .cu8 samples + env info
+esphome logs proflame2_test.yaml | tee esp.log    # VERBOSE component logs
 ```
 
 plus your YAML (redact secrets) and `dump_config` output. The `.cu8` files can

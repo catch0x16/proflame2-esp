@@ -23,12 +23,29 @@ If you have multiple SDR dongles attached, pick one with `-d <index>`.
 
 ## Step 1 — Capture command decodes
 
+The easiest way is the monitor tool, which wraps rtl_433 and does the hex
+conversion, state decoding, checksum validation, and constant derivation for
+you:
+
+```bash
+python3 tools/pf2_monitor.py            # Ctrl-C when done -> prints YAML constants
+```
+
+Press buttons on the remote; each frame prints as:
+
+```
+21:04:04  id=aa9402  cmd1=02 cmd2=26 err1=bc err2=46  checksum OK
+          power=off flame=6 fan=2 light=0 thermo=ON aux=off front=off pilot=IPI
+```
+
+If you prefer raw rtl_433 (or are running it in Docker, piping to
+`pf2_monitor.py --stdin` also works):
+
 ```bash
 rtl_433 -f 315M -R 207 -F json
 ```
 
-Stand near the SDR and press buttons on the remote. Each press prints a JSON
-line like:
+Each press prints a JSON line like:
 
 ```json
 {"model": "Proflame2-Remote", "id": 11179010, "cmd1": 2, "cmd2": 38,
@@ -51,8 +68,10 @@ Convert `id` to hex: `printf '0x%X\n' 11179010` → `0xAA9402`. That is your
 
 ## Step 3 — Derive the checksum constants
 
-Feed any one captured frame's cmd/err pairs to the tool (values in hex or
-decimal):
+If you used `pf2_monitor.py`, the session summary already printed the YAML
+block **and** verified consistency across every captured frame — paste it and
+skip ahead. Deriving manually from a raw rtl_433 JSON line instead (values in
+hex or decimal):
 
 ```bash
 python3 tools/verify_protocol.py derive --cmd1 0x02 --err1 0xBC --cmd2 0x26 --err2 0x46
@@ -74,7 +93,14 @@ capture more frames.
 ## Step 4 — Record the remote's RF signature (baseline for later comparison)
 
 While you have the remote out, save the evidence you'll want if the ESP32
-transmission ever needs debugging:
+transmission ever needs debugging. One command records everything into a
+timestamped directory (decoded frames, raw samples, environment info):
+
+```bash
+tools/pf2_capture.sh remote-baseline
+```
+
+Or manually:
 
 ```bash
 # Pulse-timing analysis - press a button, save the output

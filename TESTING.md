@@ -17,6 +17,8 @@ esphome logs proflame2_test.yaml
 
 # Terminal 2: reference receiver (add -A for pulse analysis when needed)
 rtl_433 -f 315M -R 207 -F json
+# or, much friendlier (hex fields, checksum validation, echo detection):
+python3 tools/pf2_monitor.py
 ```
 
 ## Rung 0 — Protocol math (no hardware)

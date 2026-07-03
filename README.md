@@ -22,6 +22,8 @@ Control your ProFlame 2 fireplace system using an ESP32 and CC1101 RF module thr
 | [docs/DEBUGGING.md](docs/DEBUGGING.md) | Symptom → cause reference: SPI, antenna, frequency, log interpretation, evidence to collect |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | Full ProFlame 2 RF protocol specification with capture-verified corrections |
 | [tools/verify_protocol.py](tools/verify_protocol.py) | Protocol self-test, checksum-constant derivation, expected-frame prediction |
+| [tools/pf2_monitor.py](tools/pf2_monitor.py) | Live rtl_433 dashboard: hex fields, decoded state, checksum validation, echo (ACK) detection |
+| [tools/pf2_capture.sh](tools/pf2_capture.sh) | One-command evidence bundle: JSON log + raw .cu8 samples + environment info |
 
 ## Hardware Requirements
 
