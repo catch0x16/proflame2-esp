@@ -13,6 +13,16 @@ Control your ProFlame 2 fireplace system using an ESP32 and CC1101 RF module thr
 - ✅ Web interface for standalone control
 - ✅ MQTT support (via ESPHome)
 
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [TESTING.md](TESTING.md) | Step-by-step bring-up ladder: verify each layer from protocol math to the fireplace's RF echo |
+| [docs/CAPTURE.md](docs/CAPTURE.md) | Capturing your remote with an RTL-SDR: serial number, checksum constants, RF baseline |
+| [docs/DEBUGGING.md](docs/DEBUGGING.md) | Symptom → cause reference: SPI, antenna, frequency, log interpretation, evidence to collect |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | Full ProFlame 2 RF protocol specification with capture-verified corrections |
+| [tools/verify_protocol.py](tools/verify_protocol.py) | Protocol self-test, checksum-constant derivation, expected-frame prediction |
+
 ## Hardware Requirements
 
 - **ESP32 Development Board** (ESP32-WROOM-32 recommended)
@@ -166,24 +176,21 @@ command if you can.
 
 See `proflame2_fireplace.yaml` for a complete example with all options.
 
-## Getting Your Serial Number
+## Getting Your Serial Number and Checksum Constants
 
-You have three options to get a working serial number:
+Clone them from your existing remote with an RTL-SDR — full walkthrough in
+**[docs/CAPTURE.md](docs/CAPTURE.md)**. Short version:
 
-### Option 1: Clone Existing Remote (Recommended)
-1. Use an RTL-SDR or similar to capture your existing remote's signal
-2. Decode using docker run --device /dev/bus/usb/001/003 hertzg/rtl_433 -f 315M -R 207 -F json -M level -M bits
-   or just rtl_433 -f 315M -R 207 -F json -M level -M bits if you have multiple SDR adapters use lsusb to capture the right device.
-4. Extract the serial number from the decoded packet
+```bash
+rtl_433 -f 315M -R 207 -F json          # press remote buttons, note id/cmd/err fields
+printf '0x%X\n' <id>                    # id in hex = serial_number
+python3 tools/verify_protocol.py derive --cmd1 .. --err1 .. --cmd2 .. --err2 ..
+```
 
-### Option 2: Use Test Serial
-1. Use the default `0x12345678` for testing
-2. Put your fireplace receiver in pairing mode (see manual)
-3. Send a command with the ESP32
-4. The receiver should accept and pair with this new serial
-
-### Option 3: Random Serial
-Generate a random 24-bit number and pair it with your fireplace following the pairing procedure.
+Pairing a random/fresh serial instead of cloning is **not recommended**: the
+checksum constants for an uncaptured serial are unknown (their relationship to
+the serial hasn't been reverse engineered), so the receiver would likely reject
+every command. See the note at the end of CAPTURE.md.
 
 ## Pairing with Fireplace
 
@@ -253,6 +260,11 @@ the fireplace's RF echo (its acknowledgment of an accepted command).
 
 ## Troubleshooting
 
+Work through [TESTING.md](TESTING.md) first — it isolates the failing layer.
+Then use [docs/DEBUGGING.md](docs/DEBUGGING.md) for the symptom → cause
+reference and how to capture evidence (logs, pulse analysis, raw samples).
+Quick hits:
+
 ### Fireplace doesn't respond
 1. **Check wiring** - Ensure all SPI connections are correct
 2. **Verify serial number** - Must match paired remote or be freshly paired
@@ -281,7 +293,8 @@ the fireplace's RF echo (its acknowledgment of an accepted command).
 
 ## Protocol Details
 
-The ProFlame 2 uses:
+Full specification with packet diagrams: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+Summary:
 - **Frequency**: 314.973 MHz per the FCC filing (captured remotes measure ~315.07 MHz;
   OOK receivers are wide enough that either works - `frequency:` is configurable)
 - **Modulation**: OOK (On-Off Keying)
