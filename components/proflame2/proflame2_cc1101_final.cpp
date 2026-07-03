@@ -269,6 +269,12 @@ void ProFlame2Component::build_packet(uint8_t *packet) {
         this->calculate_checksum(cmd2, this->chk_c2_, this->chk_d2_),
     };
 
+    // This line should match the rtl_433 proflame2 decode of our transmission
+    // (fields id/cmd1/cmd2/err1/err2) - the primary SDR verification hook.
+    ESP_LOGI(TAG, "Frame: id=%02x%02x%02x cmd1=%02x cmd2=%02x err1=%02x err2=%02x",
+             data_bytes[0], data_bytes[1], data_bytes[2],
+             data_bytes[3], data_bytes[4], data_bytes[5], data_bytes[6]);
+
     // Build 7 words of 13 bits each:
     //   bit12: S (sync placeholder, Manchester-encoded as '11')
     //   bit11: start guard = 1

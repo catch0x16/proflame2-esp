@@ -244,6 +244,13 @@ automation:
         entity_id: switch.fireplace_power
 ```
 
+## Testing & Verification
+
+See **[TESTING.md](TESTING.md)** for the full bring-up ladder: protocol
+self-test (`tools/verify_protocol.py selftest`), SPI sanity checks, raw RF
+verification, decoding your own transmissions with rtl_433, and watching for
+the fireplace's RF echo (its acknowledgment of an accepted command).
+
 ## Troubleshooting
 
 ### Fireplace doesn't respond
