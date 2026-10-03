@@ -123,7 +123,7 @@ From the pulse analysis, note for later:
 The `freq` field matters: cheap dongles have ±50–100 ppm error, so absolute
 readings are unreliable — but *relative* comparison with the same dongle is
 excellent. When you later capture the ESP32's transmission, tune the
-`frequency:` option until the ESP's `freq` field matches the remote's. That
+`cc1101: frequency:` option until the ESP's `freq` field matches the remote's. That
 cancels the dongle error entirely.
 
 ## Step 5 — Configure and verify

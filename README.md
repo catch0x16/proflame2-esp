@@ -51,10 +51,14 @@ GND     <-->   GND
 GPIO5   <-->   CSN (Chip Select)
 GPIO18  <-->   SCK (SPI Clock)
 GPIO23  <-->   MOSI (SPI Data Out)
-GPIO19  <-->   MISO (SPI Data In) [Optional for TX-only]
-GPIO4   <-->   GDO0 [Optional - for future RX support]
+GPIO19  <-->   MISO (SPI Data In) [Required: chip ID / state reads]
+GPIO4   <-->   GDO0 [Required: TX data, keyed by remote_transmitter]
               GDO2 [Not connected]
 ```
+
+The CC1101 runs in asynchronous serial mode: ESPHome's `cc1101` component
+configures and tunes it over SPI, and `remote_transmitter` keys the carrier
+by driving GDO0 with the ProFlame 2 bit timings.
 
 ### Pinout Diagram
 
@@ -120,12 +124,44 @@ external_components:
 
 ### Basic Configuration
 
+The radio is three blocks: ESPHome's built-in `cc1101` (radio setup and
+TX/RX switching), a `remote_transmitter` on GDO0 (bit timing), and
+`proflame2` (the protocol). GDO0 is shared between `cc1101` and
+`remote_transmitter`, which is why both pins say `allow_other_uses`.
+
 ```yaml
+spi:
+  clk_pin: GPIO18
+  miso_pin: GPIO19
+  mosi_pin: GPIO23
+
+cc1101:
+  id: cc1101_radio
+  cs_pin: GPIO5              # CC1101 chip select
+  gdo0_pin:                  # Lets cc1101 release GDO0 when it returns to RX
+    number: GPIO4
+    allow_other_uses: true
+  frequency: 314.973MHz      # ProFlame 2 is ~315 MHz - not the 433.92MHz default
+  modulation_type: ASK/OOK
+  output_power: 10
+
+remote_transmitter:
+  id: rf_tx
+  pin:
+    number: GPIO4            # Same GPIO as gdo0_pin
+    allow_other_uses: true
+  carrier_duty_percent: 100%
+  non_blocking: true
+  on_transmit:
+    then:
+      - cc1101.begin_tx: cc1101_radio
+  on_complete:
+    then:
+      - cc1101.begin_rx: cc1101_radio
+
 proflame2:
-  cs_pin: GPIO5              # Required: CC1101 chip select
-  gdo0_pin: GPIO4            # Optional: For future RX support
+  transmitter_id: rf_tx      # Optional if there is only one remote_transmitter
   serial_number: 0xAA9402    # Your remote's serial number (24 bits)
-  frequency: 314.973MHz      # Optional (default shown)
   # Device-specific error-detection constants - REQUIRED for the fireplace to
   # accept commands. See "Checksum Constants" below for how to derive yours.
   checksum_c1: 0xF
@@ -256,7 +292,7 @@ automation:
 ## Testing & Verification
 
 See **[TESTING.md](TESTING.md)** for the full bring-up ladder: protocol
-self-test (`tools/verify_protocol.py selftest`), SPI sanity checks, raw RF
+self-test (`tools/verify_protocol.py selftest`), CC1101 sanity checks, raw RF
 verification, decoding your own transmissions with rtl_433, and watching for
 the fireplace's RF echo (its acknowledgment of an accepted command).
 
@@ -268,7 +304,7 @@ reference and how to capture evidence (logs, pulse analysis, raw samples).
 Quick hits:
 
 ### Fireplace doesn't respond
-1. **Check wiring** - Ensure all SPI connections are correct
+1. **Check wiring** - SPI connections, and GDO0 to the `remote_transmitter` pin
 2. **Verify serial number** - Must match paired remote or be freshly paired
 3. **Check logs** - `esphome logs my_fireplace.yaml`
 4. **Verify checksum constants** - wrong C/D constants are the #1 cause of "no response" (see Checksum Constants)
@@ -279,9 +315,9 @@ Quick hits:
 3. **Interference** - Check for other 315MHz devices (garage doors, tire sensors)
 
 ### Can't compile
-1. **ESPHome version** - Ensure you're using ESPHome 2023.12.0 or newer
+1. **ESPHome version** - Needs ESPHome's built-in `cc1101` component (tested on 2026.9.1)
 2. **Board selection** - Verify ESP32 board type matches your hardware
-3. **Dependencies** - SPI component should be automatically included
+3. **Dependencies** - `spi:`, `cc1101:` and `remote_transmitter:` must all be in your YAML
 
 ## Safety Considerations
 
@@ -298,7 +334,7 @@ Quick hits:
 Full specification with packet diagrams: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 Summary:
 - **Frequency**: 314.973 MHz per the FCC filing (captured remotes measure ~315.07 MHz;
-  OOK receivers are wide enough that either works - `frequency:` is configurable)
+  OOK receivers are wide enough that either works - set it with `cc1101: frequency:`)
 - **Modulation**: OOK (On-Off Keying)
 - **Baud Rate**: 2400 baud for the *Manchester-encoded* on-air bits (~416 us/bit)
 - **Encoding**: Thomas Manchester variant (0->01, 1->10, sync->11)
@@ -336,9 +372,24 @@ id(my_fireplace)->set_flame_level(4);
 id(my_fireplace)->set_fan_level(2);
 ```
 
+Each call transmits the full state. To change several settings without first
+sending a frame with only the first change applied, set them all at once:
+
+```cpp
+id(my_fireplace)->set_state(esphome::proflame2::ProFlame2Command{
+    .pilot_cpi = false, .light_level = 0, .thermostat = false, .power = true,
+    .front_flame = false, .fan_level = 2, .aux_power = false, .flame_level = 4});
+```
+
+The last commanded state is saved to flash and restored (display only, never
+transmitted) after a reboot. The ESP can't see changes made with the physical
+remote, so after using it Home Assistant shows what the ESP last sent.
+
 ### Receive Mode (Future)
 
-The GDO0 pin connection enables future receive capability to:
+The `cc1101` component already returns the radio to RX after each burst, so a
+`remote_receiver` (on GDO2, or sharing GDO0 via `allow_other_uses`) could
+add receive capability to:
 - Detect remote control usage
 - Sync state with physical remote
 - Monitor fireplace status
@@ -378,6 +429,20 @@ For issues, questions, or contributions:
    - Wiring photos if applicable
 
 ## Changelog
+
+### v2.1.0
+- Radio handled by ESPHome's built-in `cc1101` component; bursts sent through
+  `remote_transmitter` on GDO0 (RMT timing) instead of a custom FIFO driver
+- `proflame2` no longer takes `cs_pin`, `gdo0_pin` or `frequency` - configure
+  those on `cc1101:` (see Basic Configuration)
+- Builds on the ESP-IDF framework (the old driver crashed at boot on IDF by
+  releasing the SPI bus before acquiring it)
+- Every command is transmitted, even if the value didn't change, so "off"
+  always works after the physical remote was used
+- Last commanded settings persist across reboots and are shown in Home
+  Assistant. They are **not** transmitted at boot, so a reboot never
+  re-lights the fireplace. Entity `restore_mode` options are ignored.
+- New `set_state()` sends a multi-field change as a single frame
 
 ### v1.0.0 (2024-12-10)
 - Initial release

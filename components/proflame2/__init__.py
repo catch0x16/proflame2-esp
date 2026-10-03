@@ -1,19 +1,16 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import spi, switch, number
-from esphome.const import (
-    CONF_ID,
-    CONF_CS_PIN,
-    CONF_FREQUENCY,
-)
-from esphome import pins
+from esphome.components import number, remote_base, switch
+from esphome.const import CONF_ID
 
-DEPENDENCIES = ["spi"]
+# The radio is driven by ESPHome's cc1101 component; this component only builds the
+# ProFlame 2 burst and sends it through a remote_transmitter wired to the CC1101's GDO0.
+DEPENDENCIES = ["remote_transmitter"]
 AUTO_LOAD = ["switch", "number"]
 
 proflame2_ns = cg.esphome_ns.namespace("proflame2")
 ProFlame2Component = proflame2_ns.class_(
-    "ProFlame2Component", cg.Component, spi.SPIDevice
+    "ProFlame2Component", cg.Component, remote_base.RemoteTransmittable
 )
 
 # Switch types
@@ -44,7 +41,6 @@ ProFlame2LightNumber = proflame2_ns.class_(
     "ProFlame2LightNumber", number.Number, cg.Component
 )
 
-CONF_GDO0_PIN = "gdo0_pin"
 CONF_SERIAL_NUMBER = "serial_number"
 CONF_POWER = "power"
 CONF_PILOT = "pilot"
@@ -55,7 +51,7 @@ CONF_FLAME = "flame"
 CONF_FAN = "fan"
 CONF_LIGHT = "light"
 # Error-detection word constants (4-bit each). Device specific: derive them from an
-# rtl_433 capture of the paired remote (see protocol/README.md). Defaults are the
+# rtl_433 capture of the paired remote (see README "Checksum Constants"). Defaults are the
 # smartfire reference device's values.
 CONF_CHECKSUM_C1 = "checksum_c1"
 CONF_CHECKSUM_D1 = "checksum_d1"
@@ -64,29 +60,28 @@ CONF_CHECKSUM_D2 = "checksum_d2"
 
 nibble = cv.All(cv.hex_int, cv.Range(min=0, max=15))
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(ProFlame2Component),
-        cv.Required(CONF_CS_PIN): pins.gpio_output_pin_schema,
-        cv.Optional(CONF_GDO0_PIN): pins.gpio_input_pin_schema,
-        cv.Optional(CONF_SERIAL_NUMBER, default=0x12345678): cv.hex_uint32_t,
-        cv.Optional(CONF_FREQUENCY, default="314.973MHz"): cv.All(
-            cv.frequency, cv.Range(min=300e6, max=348e6)
-        ),
-        cv.Optional(CONF_CHECKSUM_C1, default=0x0D): nibble,
-        cv.Optional(CONF_CHECKSUM_D1, default=0x00): nibble,
-        cv.Optional(CONF_CHECKSUM_C2, default=0x00): nibble,
-        cv.Optional(CONF_CHECKSUM_D2, default=0x07): nibble,
-        cv.Optional(CONF_POWER): switch.switch_schema(ProFlame2PowerSwitch),
-        cv.Optional(CONF_PILOT): switch.switch_schema(ProFlame2PilotSwitch),
-        cv.Optional(CONF_AUX): switch.switch_schema(ProFlame2AuxSwitch),
-        cv.Optional(CONF_FRONT): switch.switch_schema(ProFlame2FrontSwitch),
-        cv.Optional(CONF_THERMOSTAT): switch.switch_schema(ProFlame2ThermostatSwitch),
-        cv.Optional(CONF_FLAME): number.number_schema(ProFlame2FlameNumber),
-        cv.Optional(CONF_FAN): number.number_schema(ProFlame2FanNumber),
-        cv.Optional(CONF_LIGHT): number.number_schema(ProFlame2LightNumber),
-    }
-).extend(spi.spi_device_schema())
+CONFIG_SCHEMA = (
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(ProFlame2Component),
+            cv.Optional(CONF_SERIAL_NUMBER, default=0x12345678): cv.hex_uint32_t,
+            cv.Optional(CONF_CHECKSUM_C1, default=0x0D): nibble,
+            cv.Optional(CONF_CHECKSUM_D1, default=0x00): nibble,
+            cv.Optional(CONF_CHECKSUM_C2, default=0x00): nibble,
+            cv.Optional(CONF_CHECKSUM_D2, default=0x07): nibble,
+            cv.Optional(CONF_POWER): switch.switch_schema(ProFlame2PowerSwitch),
+            cv.Optional(CONF_PILOT): switch.switch_schema(ProFlame2PilotSwitch),
+            cv.Optional(CONF_AUX): switch.switch_schema(ProFlame2AuxSwitch),
+            cv.Optional(CONF_FRONT): switch.switch_schema(ProFlame2FrontSwitch),
+            cv.Optional(CONF_THERMOSTAT): switch.switch_schema(ProFlame2ThermostatSwitch),
+            cv.Optional(CONF_FLAME): number.number_schema(ProFlame2FlameNumber),
+            cv.Optional(CONF_FAN): number.number_schema(ProFlame2FanNumber),
+            cv.Optional(CONF_LIGHT): number.number_schema(ProFlame2LightNumber),
+        }
+    )
+    .extend(remote_base.REMOTE_TRANSMITTABLE_SCHEMA)
+    .extend(cv.COMPONENT_SCHEMA)
+)
 
 
 SWITCH_TYPES = {
@@ -107,10 +102,9 @@ NUMBER_TYPES = {
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
-    await spi.register_spi_device(var, config)
+    await remote_base.register_transmittable(var, config)
 
     cg.add(var.set_serial_number(config[CONF_SERIAL_NUMBER]))
-    cg.add(var.set_frequency(config[CONF_FREQUENCY] / 1e6))
     cg.add(
         var.set_checksum_constants(
             config[CONF_CHECKSUM_C1],
@@ -119,10 +113,6 @@ async def to_code(config):
             config[CONF_CHECKSUM_D2],
         )
     )
-
-    if CONF_GDO0_PIN in config:
-        pin = await cg.gpio_pin_expression(config[CONF_GDO0_PIN])
-        cg.add(var.set_gdo0_pin(pin))
 
     for key, setter in SWITCH_TYPES.items():
         if key in config:

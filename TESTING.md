@@ -33,29 +33,30 @@ the smartfire reference example.
 
 ## Rung 1 — SPI / chip sanity (ESP logs only)
 
-On boot, `dump_config` should show:
+The radio is configured by ESPHome's `cc1101` component. On boot it resets the
+chip and reads its part number and version; its `dump_config` should show:
 
 | Field | Expected | If wrong |
 |---|---|---|
-| CC1101 Part Number | `0x00` | `0xFF` or `0x00` for *everything* → SPI wiring/CS pin |
-| CC1101 Version | `0x14` (or `0x04`, `0x17`) | `0x00`/`0xFF` → MISO not connected or wrong chip |
-| FREQ | `0x0C1D46` (314.973 MHz) | config not applied — check reset sequence |
-| MDMCFG2 | `0x30` | " |
-| PKTCTRL0 | `0x00` | " |
-| FREND0 | `0x11` | " |
+| `Chip ID` | `0x0014` (or `0x0004`, `0x0017`) | `Failed to verify CC1101.` and the component is marked failed → SPI wiring / CS pin / MISO |
+| `Frequency` | `314972900 Hz` or close | `cc1101: frequency:` not set — the default is 433.92 MHz |
+| `Modulation` | `ASK/OOK` | set `modulation_type: ASK/OOK` |
+| `Output Power` | `10.0 dBm` | set `output_power: 10` |
 
-The "DEBUG: Check CC1101 Config" button re-reads these at runtime and also
-verifies MDMCFG4/3 = `0xF6`/`0x83` (2400 baud) and PA table = `00`/`C0`.
+`remote_transmitter` should also report its pin with no `Configuring RMT
+driver failed` error.
 
-## Rung 2 — Raw RF out ("DEBUG: Minimal TX Test" button)
+## Rung 2 — Raw RF out ("DEBUG: 500ms Carrier" button)
 
-Sends a 23-byte `AA55...` pattern. In terminal 2, run `rtl_433 -f 315M -A`
-instead: you should see an OOK pulse train of ~184 bits with uniform ~416 µs
-timing each press.
+Sends 500 ms of unmodulated carrier through the full GDO0 → CC1101 path. Watch
+a waterfall (GQRX/SDR++/URH) at 315 MHz, or run `rtl_433 -f 315M -A`: you
+should see one solid ~500 ms pulse per press.
 
-- **Nothing received** → antenna, PA table, frequency, or the radio never
-  entered TX (check ESP log for `MARCSTATE` warnings / `TX error`).
-- **Received but timing ≠ ~416 µs** → data rate registers.
+- **Nothing received** → antenna, frequency, GDO0 not wired to the
+  `remote_transmitter` pin, or the radio never entered TX (check the ESP log
+  for `Failed to enter TX state!` / `PLL lock failed`).
+- **Carrier present but never stops** → GDO0 stuck high; check that
+  `remote_transmitter` and `cc1101: gdo0_pin` use the same GPIO.
 
 ## Rung 3 — Full protocol frame ("DEBUG: Replay Captured Frame" button)
 
@@ -78,6 +79,7 @@ python3 tools/verify_protocol.py frame --serial 0xAA9402 --constants F,E,E,2 \
     --power --flame 3
 ```
 
+The ESP's `Sending burst:` log line should report `958 bits` and `400ms`.
 Also compare pulse analysis (`-A`) against the real remote's signature:
 
 | Metric | Real remote (dec 29 capture) |
@@ -102,11 +104,11 @@ even with the pilot off.
 
 | Symptom | Most likely layer | Evidence to capture |
 |---|---|---|
-| rtl_433 sees nothing from ESP | RF hardware / radio never TXes | ESP log at VERBOSE (`MARCSTATE`, `TX error/timeout` lines); try Rung 2 |
-| Pulses visible but garbage / wrong count | Data rate or encoding | `rtl_433 -f 315M -A` output for ESP vs remote, side by side |
+| rtl_433 sees nothing from ESP | RF hardware / radio never TXes | ESP log at VERBOSE (`cc1101` `Failed to enter TX state!` / `PLL lock failed`, `remote_transmitter` errors); try Rung 2 |
+| Pulses visible but garbage / wrong count | Bit timing or encoding | `rtl_433 -f 315M -A` output for ESP vs remote, side by side |
 | Decodes but `mic` missing or parity fails | Word structure / parity | The raw rows: `rtl_433 -f 315M -R 207 -M bits` |
 | Decodes but wrong id/cmd/err | State or constants mismatch | ESP `Frame:` log line vs rtl_433 JSON |
-| rtl_433 decode is perfect, no fireplace echo | Frequency offset, TX power, or pairing | Try `frequency: 315.000MHz` then `315.070MHz` (remote measured ~315.07 on our dongle); move ESP closer; re-pair (LEARN button) |
+| rtl_433 decode is perfect, no fireplace echo | Frequency offset, TX power, or pairing | Try `cc1101: frequency: 315.000MHz` then `315.070MHz` (remote measured ~315.07 on our dongle); move ESP closer; re-pair (LEARN button) |
 | Echo seen but no flame | Fireplace-side (valve/pilot mode) | Compare with what the real remote does for the same command |
 
 When filing away a failing capture for later analysis, record raw samples too:

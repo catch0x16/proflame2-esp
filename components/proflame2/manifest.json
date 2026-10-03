@@ -2,16 +2,16 @@
   "domain": "proflame2",
   "name": "ProFlame 2 Fireplace Control",
   "documentation": "https://github.com/j2deen/proflame2-esp",
-  "dependencies": ["spi","switch","number"],
+  "dependencies": ["remote_transmitter","switch","number"],
   "codeowners": ["@j2deen"],
   "requirements": [],
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "Jay Deen",
   "license": "MIT",
-  "description": "Control ProFlame 2 fireplace systems using ESP32 and CC1101 RF module",
+  "description": "Control ProFlame 2 fireplace systems using ESP32, ESPHome's cc1101 component and remote_transmitter",
   "hardware": {
     "supported": ["ESP32"],
-    "required": ["CC1101 RF Module (315 MHz capable)"]
+    "required": ["CC1101 RF Module (315 MHz capable), GDO0 wired to the remote_transmitter pin"]
   },
   "features": [
     "Power on/off control",
@@ -25,10 +25,8 @@
     "MQTT support"
   ],
   "config_schema": {
-    "cs_pin": "required",
-    "gdo0_pin": "optional",
+    "transmitter_id": "optional (the remote_transmitter keying CC1101 GDO0)",
     "serial_number": "required",
-    "frequency": "optional (default 314.973MHz)",
     "checksum_c1": "device specific (see README)",
     "checksum_d1": "device specific (see README)",
     "checksum_c2": "device specific (see README)",

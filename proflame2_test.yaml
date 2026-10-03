@@ -4,15 +4,11 @@ esphome:
     priority: -100
     then:
       - logger.log: "ProFlame2 Debug System Started"
-      - delay: 2s
-      - lambda: |-
-          auto* fireplace = id(my_fireplace);
-          fireplace->debug_check_config();
 
 esp32:
   board: denky32
   framework:
-    type: arduino
+    type: esp-idf
 
 external_components:
   - source:
@@ -42,12 +38,41 @@ spi:
   miso_pin: GPIO19
   mosi_pin: GPIO23
 
+# The CC1101 is driven by ESPHome's built-in cc1101 component. It runs in
+# asynchronous serial mode: GDO0 is the TX data input, keyed directly by
+# remote_transmitter's RMT output, which plays the ProFlame 2 burst as precise
+# mark/space timings. gdo0_pin lets cc1101 flip the shared pin to an input
+# whenever the radio returns to RX, so the two never drive it at once.
+cc1101:
+  id: cc1101_radio
+  cs_pin: GPIO27
+  gdo0_pin:
+    number: GPIO25
+    allow_other_uses: true
+  # FCC filing / smartfire reference. The real remote measured ~315.07 MHz on an
+  # rtl_433 dongle; OOK receivers are wide, so either works.
+  frequency: 314.973MHz
+  modulation_type: ASK/OOK
+  output_power: 10
+
+remote_transmitter:
+  id: rf_tx
+  pin:
+    number: GPIO25
+    allow_other_uses: true
+  carrier_duty_percent: 100%  # OOK: no IR-style carrier, the CC1101 supplies the RF
+  non_blocking: true
+  on_transmit:
+    then:
+      - cc1101.begin_tx: cc1101_radio
+  on_complete:
+    then:
+      - cc1101.begin_rx: cc1101_radio
+
 proflame2:
   id: my_fireplace
-  cs_pin: GPIO27
-  gdo0_pin: GPIO25
+  transmitter_id: rf_tx
   serial_number: 0xAA9402  # Your serial number
-  frequency: 314.973MHz
   # Error-detection constants for THIS remote (0xAA9402), derived from and verified
   # against all 15 distinct command frames in the SDR captures.
   checksum_c1: 0xF
@@ -108,58 +133,18 @@ button:
     icon: "mdi:restart"
   
   # DEBUG BUTTONS
+  # CC1101 hardware/SPI health is checked by the cc1101 component at boot: its
+  # config dump shows "Chip ID" and it marks itself failed if the chip doesn't answer.
+
+  # 500ms of unmodulated carrier - an unmistakable stripe on an SDR waterfall at
+  # the configured frequency. Proves the GDO0 -> CC1101 TX path end to end.
   - platform: template
-    name: "DEBUG: Check CC1101 Config"
-    icon: "mdi:chip"
-    on_press:
-      - lambda: |-
-          auto* fireplace = id(my_fireplace);
-          fireplace->debug_check_config();
-
-          
-  - platform: template
-    name: "DEBUG: Verify CC1101 Hardware"
-    icon: "mdi:chip"
-    on_press:
-      - lambda: |-
-          auto* fireplace = id(my_fireplace);
-          ESP_LOGI("hw", "=== CC1101 HARDWARE CHECK ===");
-          
-          // Read chip info
-          uint8_t partnum = fireplace->read_status_register(0x30);
-          uint8_t version = fireplace->read_status_register(0x31);
-          
-          ESP_LOGI("hw", "Part Number: 0x%02X (should be 0x00)", partnum);
-          ESP_LOGI("hw", "Version: 0x%02X (should be 0x14 or 0x04)", version);
-          
-          if (partnum != 0x00) {
-            ESP_LOGE("hw", "WRONG CHIP! This is not a CC1101!");
-          }
-          
-          // Test register read/write (restore CHANNR=0 afterwards - leaving 0xA5
-          // here would detune the radio by ~20 MHz!)
-          fireplace->write_register(0x0A, 0xA5); // CHANNR test value
-          uint8_t readback = fireplace->read_register(0x0A);
-          ESP_LOGI("hw", "Register test: wrote 0xA5, read 0x%02X %s", readback,
-                   readback == 0xA5 ? "(OK)" : "(FAIL - check SPI wiring)");
-          fireplace->write_register(0x0A, 0x00); // restore
-
-          // Check GDO0 pin voltage (if connected)
-          fireplace->write_register(0x02, 0x29); // Set GDO0 to output high
-          delay(10);
-          ESP_LOGI("hw", "Set GDO0 high - measure ~3.3V on GDO0 pin");
-
-          fireplace->write_register(0x02, 0x2E); // Set GDO0 to output low
-          delay(10);
-          ESP_LOGI("hw", "Set GDO0 low - measure ~0V on GDO0 pin");
-          fireplace->write_register(0x02, 0x02); // restore TX FIFO threshold function
-
-  - platform: template
-    name: "DEBUG: Minimal TX Test"
+    name: "DEBUG: 500ms Carrier"
     icon: "mdi:radio-tower"
     on_press:
-      - lambda: |-
-          id(my_fireplace)->debug_minimal_tx();
+      - remote_transmitter.transmit_raw:
+          transmitter_id: rf_tx
+          code: [500000]
 
   # Transmits the exact state captured from the real remote on Dec 29
   # (thermostat on, power off, fan 2, flame 6). rtl_433 -f 315M -R 207 must
@@ -170,16 +155,11 @@ button:
     icon: "mdi:radio-tower"
     on_press:
       - lambda: |-
-          auto* fp = id(my_fireplace);
-          fp->set_power(false);
-          fp->set_pilot_mode(false);
-          fp->set_thermostat(true);
-          fp->set_front_flame(false);
-          fp->set_aux_power(false);
-          fp->set_light_level(0);
-          fp->set_fan_level(2);
-          fp->set_flame_level(6);
-          fp->transmit_command();  // force a send even if state was already set
+          // One frame with the whole state. Setting entities one by one would
+          // first send a burst with only the first change applied.
+          id(my_fireplace)->set_state(esphome::proflame2::ProFlame2Command{
+              .pilot_cpi = false, .light_level = 0, .thermostat = true, .power = false,
+              .front_flame = false, .fan_level = 2, .aux_power = false, .flame_level = 6});
           ESP_LOGI("replay", "Expect rtl_433: id=aa9402 cmd1=02 cmd2=26 err1=bc err2=46");
 
 
