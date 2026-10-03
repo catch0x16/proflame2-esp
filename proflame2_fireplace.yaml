@@ -45,6 +45,9 @@ cc1101:
   # FCC filing / smartfire reference. The real remote measured ~315.07 MHz on an
   # rtl_433 dongle; OOK receivers are wide, so either works.
   frequency: 314.973MHz
+  # RX only: the default 203kHz filter passes just +-101kHz around `frequency`, which
+  # leaves a remote at ~315.07MHz on the filter edge (fragmented, undecodable RX).
+  filter_bandwidth: 325kHz
   modulation_type: ASK/OOK
   output_power: 10
 
@@ -62,6 +65,18 @@ remote_transmitter:
     then:
       - cc1101.begin_rx: cc1101_radio
 
+# Only needed for the proflame2 `receive:` block (remote proxy). In RX the CC1101
+# outputs demodulated OOK on the same GDO0 pin. idle splits the remote's burst into
+# single packets (packets are ~5ms apart); filter drops the demodulator's noise spikes.
+remote_receiver:
+  id: rf_rx
+  pin:
+    number: GPIO25
+    allow_other_uses: true
+  idle: 2ms
+  filter: 100us
+  tolerance: 40%
+
 proflame2:
   id: my_fireplace
   transmitter_id: rf_tx
@@ -77,6 +92,18 @@ proflame2:
   checksum_c2: 0xE
   checksum_d2: 0x2
 
+  # Remote proxy: accept commands from another ProFlame 2 remote and re-send them
+  # with the serial number and checksum constants above. Capture this remote's
+  # values the same way as your own (docs/CAPTURE.md). The serial must differ
+  # from serial_number above.
+  receive:
+    receiver_id: rf_rx
+    serial_number: 0x2FD302   # external remote, from tools/pf2_monitor.py
+    checksum_c1: 0xF
+    checksum_d1: 0xF
+    checksum_c2: 0x4
+    checksum_d2: 0x1
+
   power:
     name: "Fireplace Power"
     icon: "mdi:fireplace"
@@ -84,7 +111,7 @@ proflame2:
   pilot:
     name: "Fireplace Pilot Mode"
     icon: "mdi:fire"
-    entity_category: config
+    entity_category: diagnostic
 
   aux:
     name: "Fireplace Aux Power"
@@ -93,17 +120,14 @@ proflame2:
   flame:
     name: "Fireplace Flame Height"
     icon: "mdi:fire"
-    mode: slider
 
   fan:
     name: "Fireplace Fan Speed"
     icon: "mdi:fan"
-    mode: slider
 
   light:
     name: "Fireplace Light Level"
     icon: "mdi:lightbulb"
-    mode: slider
 
   front:
     name: "Fireplace Front Flame"
@@ -112,6 +136,19 @@ proflame2:
   thermostat:
     name: "Fireplace Thermostat Mode"
     icon: "mdi:thermostat"
+
+  # Home Assistant can't change the settings above - the remote owns them. It can
+  # only force the power off: while the override is on, every frame is sent with
+  # power off. It releases itself when the remote next sends power off.
+  override:
+    name: "Fireplace Power Override"
+    icon: "mdi:fireplace-off"
+
+  # Engages the override (sends power off). For automations, e.g. "at midnight,
+  # if Fireplace Power is on, press Fireplace Force Off".
+  force_off:
+    name: "Fireplace Force Off"
+    icon: "mdi:fireplace-off"
 
 sensor:
   - platform: wifi_signal

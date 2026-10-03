@@ -69,6 +69,61 @@ def encode(words):
     return "".join(out)
 
 
+BIT_RATE = 2400
+
+
+def to_timings(bits):
+    """On-air bit string -> mark (+us) / space (-us) runs, as remote_transmitter sends."""
+    edge = lambda i: (i * 1000000 + BIT_RATE // 2) // BIT_RATE
+    out, i = [], 0
+    while i < len(bits):
+        j = i
+        while j < len(bits) and bits[j] == bits[i]:
+            j += 1
+        d = edge(j) - edge(i)
+        out.append(d if bits[i] == "1" else -d)
+        i = j
+    return out
+
+
+def decode_packet(bits, start):
+    """Mirror of ProFlame2Component::decode_packet_(): 182 half-bits -> 7 data bytes."""
+    data, pos = [], start
+    for w in range(7):
+        if bits[pos:pos + 2] != "11":
+            return None
+        pos += 2
+        word = 0
+        for _ in range(12):
+            pair = bits[pos:pos + 2]
+            if pair not in ("10", "01"):
+                return None
+            word = (word << 1) | (pair == "10")
+            pos += 2
+        byte, pad = (word >> 3) & 0xFF, (word >> 2) & 1
+        if not (word & 0x800 and word & 1):
+            return None
+        if pad != (1 if w == 0 else 0) or ((word >> 1) & 1) != parity(byte, pad):
+            return None
+        data.append(byte)
+    return data
+
+
+def decode_timings(timings):
+    """Mirror of ProFlame2Component::on_receive() framing: timings -> first valid packet."""
+    bits = []
+    for t in timings:
+        dur = min(abs(t), 100000)
+        n = min((dur * BIT_RATE + 500000) // 1000000, 16)
+        bits.append(("1" if t > 0 else "0") * n)
+    bits = "".join(bits) + "00"
+    for start in range(len(bits) - 182 + 1):
+        data = decode_packet(bits, start)
+        if data is not None:
+            return data
+    return None
+
+
 def cmd_selftest(_args):
     failures = 0
 
@@ -111,6 +166,22 @@ def cmd_selftest(_args):
     cmd1, cmd2 = build_cmd_bytes(thermostat=True, fan=2, flame=6)
     check("cmd1 (thermostat=1, power=0)", cmd1, 0x02)
     check("cmd2 (fan=2, flame=6)", cmd2, 0x26)
+
+    print("Receive decoder (remote proxy):")
+    import random
+    rng = random.Random(1)
+    data, words = build_words(0xAA9402, 0x02, 0x26, 0xF, 0xE, 0xE, 0x2)
+    pkt = encode(words)
+    check("clean packet decodes", decode_timings(to_timings(pkt)), data)
+    jittered = [t + rng.randint(-150, 150) * (1 if t > 0 else -1) for t in to_timings(pkt)]
+    check("+-150us edge jitter decodes", decode_timings(jittered), data)
+    noisy = [120, -300, 90, -2000] + to_timings(pkt)
+    check("leading noise is skipped", decode_timings(noisy), data)
+    burst = ("0" * 12).join([pkt] * 5)
+    check("full 5-packet burst decodes", decode_timings(to_timings(burst)), data)
+    for flip in (40, 100):  # inside a data byte's Manchester pair
+        bad = pkt[:flip] + ("1" if pkt[flip] == "0" else "0") + pkt[flip + 1:]
+        check(f"corrupted half-bit {flip} rejected", decode_timings(to_timings(bad)), None)
 
     print(f"\n{'ALL TESTS PASSED' if failures == 0 else f'{failures} TEST(S) FAILED'}")
     return 1 if failures else 0

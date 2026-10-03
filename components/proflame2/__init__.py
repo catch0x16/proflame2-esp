@@ -1,44 +1,30 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import number, remote_base, switch
-from esphome.const import CONF_ID
+from esphome.components import binary_sensor, button, remote_base, sensor, switch
+from esphome.const import CONF_ID, STATE_CLASS_MEASUREMENT
 
 # The radio is driven by ESPHome's cc1101 component; this component only builds the
 # ProFlame 2 burst and sends it through a remote_transmitter wired to the CC1101's GDO0.
+# The optional `receive:` block also listens on a remote_receiver for a second ProFlame 2
+# remote and re-sends its commands under our own serial number (remote proxy).
+# The remote owns the fireplace state: Home Assistant sees it through read-only
+# sensors and can only force the power off (the override switch / force-off button).
 DEPENDENCIES = ["remote_transmitter"]
-AUTO_LOAD = ["switch", "number"]
+AUTO_LOAD = ["binary_sensor", "button", "sensor", "switch"]
 
 proflame2_ns = cg.esphome_ns.namespace("proflame2")
 ProFlame2Component = proflame2_ns.class_(
-    "ProFlame2Component", cg.Component, remote_base.RemoteTransmittable
+    "ProFlame2Component",
+    cg.Component,
+    remote_base.RemoteTransmittable,
+    remote_base.RemoteReceiverListener,
 )
 
-# Switch types
-ProFlame2PowerSwitch = proflame2_ns.class_(
-    "ProFlame2PowerSwitch", switch.Switch, cg.Component
+ProFlame2OverrideSwitch = proflame2_ns.class_(
+    "ProFlame2OverrideSwitch", switch.Switch, cg.Parented.template(ProFlame2Component)
 )
-ProFlame2PilotSwitch = proflame2_ns.class_(
-    "ProFlame2PilotSwitch", switch.Switch, cg.Component
-)
-ProFlame2AuxSwitch = proflame2_ns.class_(
-    "ProFlame2AuxSwitch", switch.Switch, cg.Component
-)
-ProFlame2FrontSwitch = proflame2_ns.class_(
-    "ProFlame2FrontSwitch", switch.Switch, cg.Component
-)
-ProFlame2ThermostatSwitch = proflame2_ns.class_(
-    "ProFlame2ThermostatSwitch", switch.Switch, cg.Component
-)
-
-# Number types
-ProFlame2FlameNumber = proflame2_ns.class_(
-    "ProFlame2FlameNumber", number.Number, cg.Component
-)
-ProFlame2FanNumber = proflame2_ns.class_(
-    "ProFlame2FanNumber", number.Number, cg.Component
-)
-ProFlame2LightNumber = proflame2_ns.class_(
-    "ProFlame2LightNumber", number.Number, cg.Component
+ProFlame2ForceOffButton = proflame2_ns.class_(
+    "ProFlame2ForceOffButton", button.Button, cg.Parented.template(ProFlame2Component)
 )
 
 CONF_SERIAL_NUMBER = "serial_number"
@@ -50,6 +36,8 @@ CONF_THERMOSTAT = "thermostat"
 CONF_FLAME = "flame"
 CONF_FAN = "fan"
 CONF_LIGHT = "light"
+CONF_OVERRIDE = "override"
+CONF_FORCE_OFF = "force_off"
 # Error-detection word constants (4-bit each). Device specific: derive them from an
 # rtl_433 capture of the paired remote (see README "Checksum Constants"). Defaults are the
 # smartfire reference device's values.
@@ -57,10 +45,42 @@ CONF_CHECKSUM_C1 = "checksum_c1"
 CONF_CHECKSUM_D1 = "checksum_d1"
 CONF_CHECKSUM_C2 = "checksum_c2"
 CONF_CHECKSUM_D2 = "checksum_d2"
+CONF_RECEIVE = "receive"
 
 nibble = cv.All(cv.hex_int, cv.Range(min=0, max=15))
 
-CONFIG_SCHEMA = (
+# Flame / fan / light level, 0-6.
+LEVEL_SCHEMA = sensor.sensor_schema(
+    accuracy_decimals=0, state_class=STATE_CLASS_MEASUREMENT
+)
+
+# The external remote whose frames we accept. Its serial and checksum constants are
+# derived exactly like our own (see README "Checksum Constants"), from a capture of
+# that remote. No defaults: a wrong value silently drops every frame.
+RECEIVE_SCHEMA = cv.Schema(
+    {
+        cv.Required(CONF_SERIAL_NUMBER): cv.hex_uint32_t,
+        cv.Required(CONF_CHECKSUM_C1): nibble,
+        cv.Required(CONF_CHECKSUM_D1): nibble,
+        cv.Required(CONF_CHECKSUM_C2): nibble,
+        cv.Required(CONF_CHECKSUM_D2): nibble,
+    }
+).extend(remote_base.REMOTE_LISTENER_SCHEMA)
+
+
+def _validate_receive(config):
+    if CONF_RECEIVE in config:
+        rx_serial = config[CONF_RECEIVE][CONF_SERIAL_NUMBER] & 0xFFFFFF
+        if rx_serial == config[CONF_SERIAL_NUMBER] & 0xFFFFFF:
+            # We would hear our own retransmission and re-send it forever.
+            raise cv.Invalid(
+                "receive serial_number must differ from serial_number",
+                path=[CONF_RECEIVE, CONF_SERIAL_NUMBER],
+            )
+    return config
+
+
+CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(ProFlame2Component),
@@ -69,33 +89,37 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_CHECKSUM_D1, default=0x00): nibble,
             cv.Optional(CONF_CHECKSUM_C2, default=0x00): nibble,
             cv.Optional(CONF_CHECKSUM_D2, default=0x07): nibble,
-            cv.Optional(CONF_POWER): switch.switch_schema(ProFlame2PowerSwitch),
-            cv.Optional(CONF_PILOT): switch.switch_schema(ProFlame2PilotSwitch),
-            cv.Optional(CONF_AUX): switch.switch_schema(ProFlame2AuxSwitch),
-            cv.Optional(CONF_FRONT): switch.switch_schema(ProFlame2FrontSwitch),
-            cv.Optional(CONF_THERMOSTAT): switch.switch_schema(ProFlame2ThermostatSwitch),
-            cv.Optional(CONF_FLAME): number.number_schema(ProFlame2FlameNumber),
-            cv.Optional(CONF_FAN): number.number_schema(ProFlame2FanNumber),
-            cv.Optional(CONF_LIGHT): number.number_schema(ProFlame2LightNumber),
+            cv.Optional(CONF_POWER): binary_sensor.binary_sensor_schema(),
+            cv.Optional(CONF_PILOT): binary_sensor.binary_sensor_schema(),
+            cv.Optional(CONF_AUX): binary_sensor.binary_sensor_schema(),
+            cv.Optional(CONF_FRONT): binary_sensor.binary_sensor_schema(),
+            cv.Optional(CONF_THERMOSTAT): binary_sensor.binary_sensor_schema(),
+            cv.Optional(CONF_FLAME): LEVEL_SCHEMA,
+            cv.Optional(CONF_FAN): LEVEL_SCHEMA,
+            cv.Optional(CONF_LIGHT): LEVEL_SCHEMA,
+            cv.Optional(CONF_OVERRIDE): switch.switch_schema(ProFlame2OverrideSwitch),
+            cv.Optional(CONF_FORCE_OFF): button.button_schema(ProFlame2ForceOffButton),
+            cv.Optional(CONF_RECEIVE): RECEIVE_SCHEMA,
         }
     )
     .extend(remote_base.REMOTE_TRANSMITTABLE_SCHEMA)
-    .extend(cv.COMPONENT_SCHEMA)
+    .extend(cv.COMPONENT_SCHEMA),
+    _validate_receive,
 )
 
 
-SWITCH_TYPES = {
-    CONF_POWER: "set_power_switch",
-    CONF_PILOT: "set_pilot_switch",
-    CONF_AUX: "set_aux_switch",
-    CONF_FRONT: "set_front_switch",
-    CONF_THERMOSTAT: "set_thermostat_switch",
+BINARY_SENSOR_TYPES = {
+    CONF_POWER: "set_power_sensor",
+    CONF_PILOT: "set_pilot_sensor",
+    CONF_AUX: "set_aux_sensor",
+    CONF_FRONT: "set_front_sensor",
+    CONF_THERMOSTAT: "set_thermostat_sensor",
 }
 
-NUMBER_TYPES = {
-    CONF_FLAME: "set_flame_number",
-    CONF_FAN: "set_fan_number",
-    CONF_LIGHT: "set_light_number",
+SENSOR_TYPES = {
+    CONF_FLAME: "set_flame_sensor",
+    CONF_FAN: "set_fan_sensor",
+    CONF_LIGHT: "set_light_sensor",
 }
 
 
@@ -114,26 +138,34 @@ async def to_code(config):
         )
     )
 
-    for key, setter in SWITCH_TYPES.items():
-        if key in config:
-            conf = config[key]
-            sw = cg.new_Pvariable(conf[CONF_ID])
-            await cg.register_component(sw, conf)
-            await switch.register_switch(sw, conf)
-            cg.add(sw.set_parent(var))
-            cg.add(getattr(var, setter)(sw))
-
-    for key, setter in NUMBER_TYPES.items():
-        if key in config:
-            conf = config[key]
-            num = cg.new_Pvariable(conf[CONF_ID])
-            await cg.register_component(num, conf)
-            await number.register_number(
-                num,
-                conf,
-                min_value=0,
-                max_value=6,
-                step=1,
+    if CONF_RECEIVE in config:
+        rx = config[CONF_RECEIVE]
+        await remote_base.register_listener(var, rx)
+        cg.add(
+            var.set_receive_config(
+                rx[CONF_SERIAL_NUMBER],
+                rx[CONF_CHECKSUM_C1],
+                rx[CONF_CHECKSUM_D1],
+                rx[CONF_CHECKSUM_C2],
+                rx[CONF_CHECKSUM_D2],
             )
-            cg.add(num.set_parent(var))
-            cg.add(getattr(var, setter)(num))
+        )
+
+    for key, setter in BINARY_SENSOR_TYPES.items():
+        if key in config:
+            bs = await binary_sensor.new_binary_sensor(config[key])
+            cg.add(getattr(var, setter)(bs))
+
+    for key, setter in SENSOR_TYPES.items():
+        if key in config:
+            sens = await sensor.new_sensor(config[key])
+            cg.add(getattr(var, setter)(sens))
+
+    if CONF_OVERRIDE in config:
+        sw = await switch.new_switch(config[CONF_OVERRIDE])
+        await cg.register_parented(sw, var)
+        cg.add(var.set_override_switch(sw))
+
+    if CONF_FORCE_OFF in config:
+        btn = await button.new_button(config[CONF_FORCE_OFF])
+        await cg.register_parented(btn, var)

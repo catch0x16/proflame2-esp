@@ -2,12 +2,16 @@
 
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/remote_base/remote_base.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
+#include "esphome/components/button/button.h"
+#include "esphome/components/sensor/sensor.h"
 #include "esphome/components/switch/switch.h"
-#include "esphome/components/number/number.h"
 
 #include <cstring>
+#include <vector>
 
 namespace esphome {
 namespace proflame2 {
@@ -31,7 +35,19 @@ struct ProFlame2Command {
 // to a remote_transmitter as mark/space timings. The radio itself (reset, register
 // setup, calibration, TX/RX switching) is owned by ESPHome's cc1101 component, driven
 // from the transmitter's on_transmit/on_complete triggers.
-class ProFlame2Component : public Component, public remote_base::RemoteTransmittable {
+//
+// Optionally also a remote proxy: frames from a second (external) remote heard on a
+// remote_receiver are decoded, adopted as the current state and re-sent under our own
+// serial number and checksum constants. The remote owns the state; Home Assistant only
+// sees it through read-only sensors.
+//
+// Power override: while engaged, every frame we send has power forced off, whatever the
+// remote asks for. The remote keeps re-sending its last state, so a plain "off" from Home
+// Assistant would be undone at its next frame. The override is released by the remote's
+// next power-off frame (someone turned it off), after which the remote is in charge again.
+class ProFlame2Component : public Component,
+                           public remote_base::RemoteTransmittable,
+                           public remote_base::RemoteReceiverListener {
  public:
     void setup() override;
     void loop() override;
@@ -47,10 +63,22 @@ class ProFlame2Component : public Component, public remote_base::RemoteTransmitt
         this->chk_c2_ = c2 & 0x0F;
         this->chk_d2_ = d2 & 0x0F;
     }
+    // Identity of the external remote whose commands we accept and re-send.
+    void set_receive_config(uint32_t serial, uint8_t c1, uint8_t d1, uint8_t c2, uint8_t d2) {
+        this->rx_enabled_ = true;
+        this->rx_serial_ = serial & 0xFFFFFF;
+        this->rx_chk_c1_ = c1 & 0x0F;
+        this->rx_chk_d1_ = d1 & 0x0F;
+        this->rx_chk_c2_ = c2 & 0x0F;
+        this->rx_chk_d2_ = d2 & 0x0F;
+    }
 
-    // Control methods. Every call transmits: each frame carries the full state, so
-    // re-sending an unchanged value is harmless and keeps commands like "off" working
-    // even when the fireplace was changed by the physical remote.
+    // RemoteReceiverListener: called from remote_receiver's loop with one captured frame.
+    bool on_receive(remote_base::RemoteReceiveData data) override;
+
+    // Control methods (for lambdas; the remote proxy uses set_state). Every call
+    // transmits: each frame carries the full state, so re-sending an unchanged value is
+    // harmless. The power override still applies to what is sent.
     // Replace the whole state at once and send it as a single frame.
     void set_state(const ProFlame2Command &state);
     void set_power(bool state);
@@ -61,20 +89,27 @@ class ProFlame2Component : public Component, public remote_base::RemoteTransmitt
     void set_aux_power(bool state);
     void set_front_flame(bool state);
     void set_thermostat(bool state);
+    // Engaging sends power off immediately (even if already engaged). Releasing re-sends
+    // the remote's last state, so the fireplace follows the remote again right away.
+    void set_override(bool engaged);
+    bool is_override_engaged() const { return this->override_; }
 
-    // Switch components
-    void set_power_switch(switch_::Switch *sw) { this->power_switch_ = sw; }
-    void set_pilot_switch(switch_::Switch *sw) { this->pilot_switch_ = sw; }
-    void set_aux_switch(switch_::Switch *sw) { this->aux_switch_ = sw; }
-    void set_front_switch(switch_::Switch *sw) { this->front_switch_ = sw; }
-    void set_thermostat_switch(switch_::Switch *sw) { this->thermostat_switch_ = sw; }
+    // Read-only state entities
+    void set_power_sensor(binary_sensor::BinarySensor *s) { this->power_sensor_ = s; }
+    void set_pilot_sensor(binary_sensor::BinarySensor *s) { this->pilot_sensor_ = s; }
+    void set_aux_sensor(binary_sensor::BinarySensor *s) { this->aux_sensor_ = s; }
+    void set_front_sensor(binary_sensor::BinarySensor *s) { this->front_sensor_ = s; }
+    void set_thermostat_sensor(binary_sensor::BinarySensor *s) { this->thermostat_sensor_ = s; }
+    void set_flame_sensor(sensor::Sensor *s) { this->flame_sensor_ = s; }
+    void set_fan_sensor(sensor::Sensor *s) { this->fan_sensor_ = s; }
+    void set_light_sensor(sensor::Sensor *s) { this->light_sensor_ = s; }
 
-    // Number components for levels
-    void set_flame_number(number::Number *num) { this->flame_number_ = num; }
-    void set_fan_number(number::Number *num) { this->fan_number_ = num; }
-    void set_light_number(number::Number *num) { this->light_number_ = num; }
+    void set_override_switch(switch_::Switch *sw) { this->override_switch_ = sw; }
 
+    // Last state requested by the remote (or a lambda). What is actually sent is
+    // effective_state(): this with the power override applied.
     ProFlame2Command current_state_{};
+    ProFlame2Command effective_state() const;
     // Queue the current state for transmission (starts immediately if the rate limit allows).
     void transmit_command();
     void build_packet(uint8_t *packet);
@@ -83,6 +118,10 @@ class ProFlame2Component : public Component, public remote_base::RemoteTransmitt
 
  protected:
     uint8_t calculate_parity(uint8_t data, uint8_t pad);
+
+    // Decode one 182-bit Manchester packet starting at `start` in an on-air bit stream
+    // into its 7 data bytes. Checks sync, guards, padding and parity only.
+    bool decode_packet_(const std::vector<bool> &bits, size_t start, uint8_t *data);
 
     // Build a single on-air burst: 5x Manchester-encoded packets separated by 12 zero bits.
     // This matches the Proflame 2 burst structure described in FCC docs / smartfire reference.
@@ -100,10 +139,17 @@ class ProFlame2Component : public Component, public remote_base::RemoteTransmitt
     void state_changed_();
     void publish_state_();
 
-    // current_state_ survives reboots so Home Assistant shows the last commanded
-    // settings. It is restored for display only - nothing is transmitted at boot, so
-    // a reboot can never re-light the fireplace on its own.
+    // current_state_ and the override survive reboots so Home Assistant shows the last
+    // commanded settings. Restored for display only - nothing is transmitted at boot, so
+    // a reboot can never re-light the fireplace on its own. Keeping the override means
+    // the remote's next frame after a reboot is still forced off.
+    struct SavedState {
+        ProFlame2Command state;
+        bool override_engaged;
+    };
+    void save_state_();
     ESPPreferenceObject pref_;
+    bool override_{false};
 
     // Configuration
     uint32_t serial_number_{0x12345678};  // 24 bits used; must be cloned from the paired remote
@@ -113,111 +159,57 @@ class ProFlame2Component : public Component, public remote_base::RemoteTransmitt
     uint8_t chk_c2_{0x00};
     uint8_t chk_d2_{0x07};
 
-    // Component references
-    switch_::Switch *power_switch_{nullptr};
-    switch_::Switch *pilot_switch_{nullptr};
-    switch_::Switch *aux_switch_{nullptr};
-    switch_::Switch *front_switch_{nullptr};
-    switch_::Switch *thermostat_switch_{nullptr};
+    // External remote (receive) configuration
+    bool rx_enabled_{false};
+    uint32_t rx_serial_{0};
+    uint8_t rx_chk_c1_{0};
+    uint8_t rx_chk_d1_{0};
+    uint8_t rx_chk_c2_{0};
+    uint8_t rx_chk_d2_{0};
 
-    number::Number *flame_number_{nullptr};
-    number::Number *fan_number_{nullptr};
-    number::Number *light_number_{nullptr};
+    // Entity references
+    binary_sensor::BinarySensor *power_sensor_{nullptr};
+    binary_sensor::BinarySensor *pilot_sensor_{nullptr};
+    binary_sensor::BinarySensor *aux_sensor_{nullptr};
+    binary_sensor::BinarySensor *front_sensor_{nullptr};
+    binary_sensor::BinarySensor *thermostat_sensor_{nullptr};
+
+    sensor::Sensor *flame_sensor_{nullptr};
+    sensor::Sensor *fan_sensor_{nullptr};
+    sensor::Sensor *light_sensor_{nullptr};
+
+    switch_::Switch *override_switch_{nullptr};
 
     // On-air bit rate of the Manchester-encoded stream (~416.7us per bit).
     static const uint32_t BIT_RATE = 2400;
     // Quiet time between the end of one burst and the start of the next.
     static const uint32_t MIN_TRANSMISSION_GAP = 200;  // ms
+    // The remote repeats each packet every ~81ms within a burst. Repeats of the same
+    // command closer than this are one button press; we also hold our own TX until the
+    // remote has been quiet this long so the two bursts don't collide on air.
+    static const uint32_t RX_REPEAT_WINDOW = 250;  // ms
 
     // Timing
     uint32_t last_transmission_{0};  // start of the last burst
     uint32_t last_burst_ms_{0};      // airtime of the last burst
     bool tx_pending_{false};
+    uint32_t last_rx_{0};            // last accepted packet from the external remote
+    uint8_t last_rx_cmd1_{0};
+    uint8_t last_rx_cmd2_{0};
 };
 
-// Switch implementations
-class ProFlame2PowerSwitch : public switch_::Switch, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void write_state(bool state) override {
-        this->parent_->set_power(state);
-    }
+// Engages/releases the power override.
+class ProFlame2OverrideSwitch : public switch_::Switch, public Parented<ProFlame2Component> {
  protected:
-    ProFlame2Component *parent_;
+    void write_state(bool state) override { this->parent_->set_override(state); }
 };
 
-class ProFlame2PilotSwitch : public switch_::Switch, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void write_state(bool state) override {
-        this->parent_->set_pilot_mode(state);
-    }
+// Engages the override, which sends power off. Meant for automations ("turn it off at
+// midnight if it's on"); check the power sensor first, because the override only
+// releases when the remote next sends power off.
+class ProFlame2ForceOffButton : public button::Button, public Parented<ProFlame2Component> {
  protected:
-    ProFlame2Component *parent_;
-};
-
-class ProFlame2AuxSwitch : public switch_::Switch, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void write_state(bool state) override {
-        this->parent_->set_aux_power(state);
-    }
- protected:
-    ProFlame2Component *parent_;
-};
-
-class ProFlame2FrontSwitch : public switch_::Switch, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void write_state(bool state) override {
-        this->parent_->set_front_flame(state);
-    }
- protected:
-    ProFlame2Component *parent_;
-};
-
-class ProFlame2ThermostatSwitch : public switch_::Switch, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void write_state(bool state) override {
-        this->parent_->set_thermostat(state);
-    }
- protected:
-    ProFlame2Component *parent_;
-};
-
-// Number component implementations
-class ProFlame2FlameNumber : public number::Number, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void control(float value) override {
-        uint8_t level = static_cast<uint8_t>(value);
-        this->parent_->set_flame_level(level);
-    }
- protected:
-    ProFlame2Component *parent_;
-};
-
-class ProFlame2FanNumber : public number::Number, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void control(float value) override {
-        uint8_t level = static_cast<uint8_t>(value);
-        this->parent_->set_fan_level(level);
-    }
- protected:
-    ProFlame2Component *parent_;
-};
-
-class ProFlame2LightNumber : public number::Number, public Component {
- public:
-    void set_parent(ProFlame2Component *parent) { this->parent_ = parent; }
-    void control(float value) override {
-        uint8_t level = static_cast<uint8_t>(value);
-        this->parent_->set_light_level(level);
-    }
- protected:
-    ProFlame2Component *parent_;
+    void press_action() override { this->parent_->set_override(true); }
 };
 
 }  // namespace proflame2

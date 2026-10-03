@@ -87,7 +87,7 @@ proflame2:
   pilot:
     name: "Fireplace Pilot Mode"
     icon: "mdi:fire"
-    entity_category: config
+    entity_category: diagnostic
 
   aux:
     name: "Fireplace Aux Power"
@@ -96,17 +96,14 @@ proflame2:
   flame:
     name: "Fireplace Flame Height"
     icon: "mdi:fire"
-    mode: slider
 
   fan:
     name: "Fireplace Fan Speed"
     icon: "mdi:fan"
-    mode: slider
 
   light:
     name: "Fireplace Light Level"
     icon: "mdi:lightbulb"
-    mode: slider
 
   front:
     name: "Fireplace Front Flame"
@@ -115,6 +112,19 @@ proflame2:
   thermostat:
     name: "Fireplace Thermostat Mode"
     icon: "mdi:thermostat"
+
+  # Home Assistant can't change the settings above - the remote owns them. It can
+  # only force the power off: while the override is on, every frame is sent with
+  # power off. It releases itself when the remote next sends power off.
+  override:
+    name: "Fireplace Power Override"
+    icon: "mdi:fireplace-off"
+
+  # Engages the override (sends power off). For automations, e.g. "at midnight,
+  # if Fireplace Power is on, press Fireplace Force Off".
+  force_off:
+    name: "Fireplace Force Off"
+    icon: "mdi:fireplace-off"
 
 sensor:
   - platform: wifi_signal

@@ -6,9 +6,10 @@ Control your ProFlame 2 fireplace system using an ESP32 and CC1101 RF module thr
 
 - ✅ Full control of ProFlame 2 fireplace systems
 - ✅ Native Home Assistant integration via ESPHome
-- ✅ Control power, flame height (0-6), fan speed (0-6), light level (0-6)
-- ✅ Switch between IPI/CPI pilot modes
-- ✅ Auxiliary power control
+- ✅ Monitor power, flame height (0-6), fan speed (0-6), light level (0-6),
+  IPI/CPI pilot mode and auxiliary power (the remote owns the settings)
+- ✅ Power override: force the fireplace off from Home Assistant
+- ✅ Remote proxy: relay commands from a second ProFlame 2 remote
 - ✅ No cloud dependency - fully local control
 - ✅ Web interface for standalone control
 - ✅ MQTT support (via ESPHome)
@@ -186,6 +187,12 @@ proflame2:
 
   light:
     name: "Light Level"
+
+  override:
+    name: "Fireplace Power Override"
+
+  force_off:
+    name: "Fireplace Force Off"
 ```
 
 ### Checksum Constants (IMPORTANT)
@@ -238,7 +245,8 @@ every command. See the note at the end of CAPTURE.md.
    - The amber LED will illuminate
 
 2. **Send pairing signal from ESP32**:
-   - Toggle the power switch in Home Assistant
+   - Press "Fireplace Force Off" in Home Assistant (it sends a power-off frame),
+     or press a button on the proxied remote
    - The receiver should beep 4 times indicating successful pairing
 
 3. **Test the connection**:
@@ -251,42 +259,48 @@ every command. See the note at the end of CAPTURE.md.
 Once configured and running, the fireplace will appear in Home Assistant with:
 
 ### Entities Created
-- `switch.fireplace_power` - Main on/off control
-- `switch.fireplace_pilot_mode` - IPI/CPI mode selection
-- `switch.fireplace_aux_power` - Auxiliary outlet control
-- `number.fireplace_flame_height` - Flame height (0-6)
-- `number.fireplace_fan_speed` - Fan speed (0-6)
-- `number.fireplace_light_level` - Light brightness (0-6)
+The remote (relayed through `receive:`) owns the fireplace settings. Home
+Assistant shows them read-only:
+
+- `binary_sensor.fireplace_power` - On/off as last sent to the fireplace
+  (off while the override is engaged)
+- `binary_sensor.fireplace_pilot_mode` - On = CPI, off = IPI
+- `binary_sensor.fireplace_aux_power`, `binary_sensor.fireplace_front_flame`,
+  `binary_sensor.fireplace_thermostat_mode`
+- `sensor.fireplace_flame_height`, `sensor.fireplace_fan_speed`,
+  `sensor.fireplace_light_level` - Levels (0-6)
+
+The only thing Home Assistant can do is turn the fireplace off:
+
+- `switch.fireplace_power_override` - While on, every frame is sent with power
+  off, including the remote's periodic re-sends of its last state. All other
+  settings still follow the remote. It turns itself off when the remote next
+  sends power off (someone turned the fireplace off), and the remote is back in
+  charge. Turning it off by hand re-sends the remote's last state right away,
+  which can turn the fireplace back on.
+- `button.fireplace_force_off` - Turns the override on (and so sends power off).
+
+The override is saved to flash, so a reboot doesn't release it.
 
 ### Example Automations
 
-#### Turn on at sunset:
+#### Turn off at midnight if it's on:
 ```yaml
 automation:
-  - alias: "Fireplace Sunset"
+  - alias: "Fireplace Midnight Off"
     trigger:
-      - platform: sun
-        event: sunset
+      - platform: time
+        at: "00:00:00"
+    condition:
+      # Only if on: the override stays engaged until the remote sends power off,
+      # so engaging it while the fireplace is already off would block the
+      # remote's next "on".
+      - condition: state
+        entity_id: binary_sensor.fireplace_power
+        state: "on"
     action:
-      - service: switch.turn_on
-        entity_id: switch.fireplace_power
-      - service: number.set_value
-        entity_id: number.fireplace_flame_height
-        data:
-          value: 3
-```
-
-#### Temperature-based control:
-```yaml
-automation:
-  - alias: "Fireplace Temperature Control"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.living_room_temperature
-        below: 18
-    action:
-      - service: switch.turn_on
-        entity_id: switch.fireplace_power
+      - service: button.press
+        entity_id: button.fireplace_force_off
 ```
 
 ## Testing & Verification
@@ -381,24 +395,75 @@ id(my_fireplace)->set_state(esphome::proflame2::ProFlame2Command{
     .front_flame = false, .fan_level = 2, .aux_power = false, .flame_level = 4});
 ```
 
-The last commanded state is saved to flash and restored (display only, never
-transmitted) after a reboot. The ESP can't see changes made with the physical
-remote, so after using it Home Assistant shows what the ESP last sent.
+The power override applies to these calls too. The last commanded state and
+the override are saved to flash and restored (display only, never transmitted)
+after a reboot. The ESP can't see changes made with the paired remote, so after
+using it Home Assistant shows what the ESP last sent.
 
-### Receive Mode (Future)
+### Remote Proxy (`receive:`)
 
-The `cc1101` component already returns the radio to RX after each burst, so a
-`remote_receiver` (on GDO2, or sharing GDO0 via `allow_other_uses`) could
-add receive capability to:
-- Detect remote control usage
-- Sync state with physical remote
-- Monitor fireplace status
+The ESP can listen for a second ProFlame 2 remote (one the fireplace is *not*
+paired with) and relay its commands. When a valid frame from that remote
+arrives, the ESP:
+
+1. decodes it and checks the serial and checksums against `receive:`,
+2. takes its full state as the current state (so Home Assistant updates), and
+3. re-sends that state under the top-level `serial_number` and checksum constants,
+   with power forced off while the power override is engaged. A power-off frame
+   from the remote releases the override.
+
+The `cc1101` component returns the radio to RX after each burst, and in RX it
+outputs demodulated OOK on GDO0. Add a `remote_receiver` on that pin:
+
+```yaml
+remote_receiver:
+  id: rf_rx
+  pin:
+    number: GPIO25          # same GPIO as cc1101 gdo0_pin / remote_transmitter
+    allow_other_uses: true
+  idle: 2ms                 # one packet per capture (packets are ~5 ms apart)
+  filter: 100us             # drop demodulator noise spikes
+  tolerance: 40%
+
+proflame2:
+  # ... serial_number / checksum constants of the remote the fireplace is paired with
+  receive:
+    receiver_id: rf_rx
+    serial_number: 0x123456 # the external remote
+    checksum_c1: 0x0        # derived from a capture of the external remote,
+    checksum_d1: 0x0        # exactly as in "Checksum Constants" above
+    checksum_c2: 0x0
+    checksum_d2: 0x0
+```
+
+Behaviour notes:
+- The remote sends each press as 5 identical packets. Only the first is acted on.
+  The ESP waits until the remote has been quiet for 250 ms before transmitting,
+  so the two bursts don't collide.
+- `receive: serial_number` must differ from `serial_number`. Otherwise the ESP
+  would hear its own retransmission and relay it forever. This is rejected at
+  config time.
+- Frames from other serials are ignored, including the ESP's own transmissions
+  and the paired remote. If the checksums don't match, a warning shows the
+  expected and received `err1`/`err2`.
+- Receive logs (tag `proflame2`), from least to most verbose:
+  | Level | Line | Meaning |
+  |---|---|---|
+  | INFO | `RX command from remote 0x…: Power=…, … - retransmitting` | accepted and relayed |
+  | WARN | `RX: checksum mismatch from 0x…` | right remote, wrong `receive:` constants |
+  | DEBUG | `RX frame: id=… cmd1=… cmd2=… err1=… err2=…` | any valid packet decoded (compare with rtl_433) |
+  | DEBUG | `RX: ignoring frame from 0x… (…)` | another serial, e.g. our own transmission |
+  | DEBUG | `RX: repeat packet of the same press, ignored` | packets 2-5 of a burst |
+  | VERBOSE | `RX: N timings / M bits - no valid packet` | signal heard but not decodable: tune `filter`/`tolerance`/`idle` |
+  | VERY_VERBOSE | `RX: … - too short, ignored` | demodulator noise |
+- `tools/verify_protocol.py selftest` includes decoder round-trip tests
+  (jitter, leading noise, full burst, corrupted bits).
 
 ## Contributing
 
 Contributions are welcome! Please submit pull requests for:
 - Additional fireplace model support
-- Receive mode implementation
+- State sync from the paired remote / fireplace status
 - Climate component integration
 - Improved error handling
 
@@ -429,6 +494,16 @@ For issues, questions, or contributions:
    - Wiring photos if applicable
 
 ## Changelog
+
+### Unreleased
+- **Breaking:** fireplace settings are read-only in Home Assistant (`binary_sensor` /
+  `sensor` instead of `switch` / `number`; drop `mode: slider` from your config).
+  The remote owns the state
+- Power override switch (`override:`) and force-off button (`force_off:`). They force
+  power off until the remote next sends power off
+- Remote proxy: optional `receive:` block decodes frames from an external
+  remote on a `remote_receiver` and re-sends them with the local serial and
+  checksum constants
 
 ### v2.1.0
 - Radio handled by ESPHome's built-in `cc1101` component; bursts sent through
