@@ -12,14 +12,16 @@ static const char *TAG = "proflame2";
 void ProFlame2Component::setup() {
     // Keyed on the serial number so a different remote's settings are never restored.
     this->pref_ = global_preferences->make_preference<SavedState>(
-        fnv1_hash_extend(fnv1_hash("proflame2_v2"), this->serial_number_), true);
+        fnv1_hash_extend(fnv1_hash("proflame2_v3"), this->serial_number_), true);
 
     SavedState saved{};
     if (this->pref_.load(&saved)) {
         this->current_state_ = saved.state;
         this->override_ = saved.override_engaged;
-        ESP_LOGI(TAG, "Restored last state (display only, not transmitted)%s",
-                 this->override_ ? " - power override engaged" : "");
+        this->state_valid_ = saved.state_valid;
+        ESP_LOGI(TAG, "Restored last state (display only, not transmitted)%s%s",
+                 this->override_ ? " - power override engaged" : "",
+                 this->state_valid_ ? "" : " - not yet set by the remote");
     }
     // Publish even with nothing saved, so the sensors show 0 instead of unknown.
     this->publish_state_();
@@ -254,6 +256,7 @@ bool ProFlame2Component::on_receive(remote_base::RemoteReceiveData data) {
         this->override_ = false;
         ESP_LOGI(TAG, "Remote sent power off - power override released");
     }
+    this->state_valid_ = true;
     this->set_state(st);
     return true;
 }
@@ -454,7 +457,7 @@ void ProFlame2Component::state_changed_() {
 }
 
 void ProFlame2Component::save_state_() {
-    SavedState saved{this->current_state_, this->override_};
+    SavedState saved{this->current_state_, this->override_, this->state_valid_};
     this->pref_.save(&saved);
 }
 
@@ -478,6 +481,21 @@ void ProFlame2Component::publish_state_() {
     if (this->fan_sensor_) this->fan_sensor_->publish_state(st.fan_level);
     if (this->light_sensor_) this->light_sensor_->publish_state(st.light_level);
     if (this->override_switch_) this->override_switch_->publish_state(this->override_);
+    if (this->state_valid_sensor_) this->state_valid_sensor_->publish_state(this->state_valid_);
+}
+
+void ProFlame2Component::sync_state() {
+    if (!this->state_valid_) {
+        ESP_LOGW(TAG, "Sync: no state received from the remote yet - nothing sent");
+        return;
+    }
+    const ProFlame2Command st = this->effective_state();
+    ESP_LOGI(TAG, "Sync: re-sending current state: Power=%d%s, Pilot=%s, Flame=%d, Fan=%d, "
+                  "Light=%d, Aux=%d, Front=%d, Thermo=%d",
+             st.power, this->override_ ? " (override)" : "", st.pilot_cpi ? "CPI" : "IPI",
+             st.flame_level, st.fan_level, st.light_level, st.aux_power, st.front_flame,
+             st.thermostat);
+    this->transmit_command();
 }
 
 void ProFlame2Component::set_override(bool engaged) {

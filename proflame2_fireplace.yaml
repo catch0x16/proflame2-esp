@@ -1,30 +1,8 @@
-esphome:
-  name: proflame2-fireplace
-
-esp32:
-  board: denky32
-  framework:
-    type: esp-idf
-
 external_components:
   - source:
       type: local
       path: ./components
     components: [proflame2]
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap:
-    ssid: "ProFlame2-Fallback"
-    password: !secret ap_password
-
-logger:
-  level: DEBUG
-
-api:
-  encryption:
-    key: !secret api_encryption_key
 
 spi:
   clk_pin: GPIO18
@@ -105,84 +83,58 @@ proflame2:
     checksum_d2: 0x1
 
   power:
-    name: "Fireplace Power"
+    name: "Power"
     icon: "mdi:fireplace"
 
   pilot:
-    name: "Fireplace Pilot Mode"
+    name: "Pilot Mode"
     icon: "mdi:fire"
     entity_category: diagnostic
 
   aux:
-    name: "Fireplace Aux Power"
+    name: "Aux Power"
     icon: "mdi:power-plug"
 
   flame:
-    name: "Fireplace Flame Height"
+    name: "Flame Height"
     icon: "mdi:fire"
 
   fan:
-    name: "Fireplace Fan Speed"
+    name: "Fan Speed"
     icon: "mdi:fan"
 
   light:
-    name: "Fireplace Light Level"
+    name: "Light Level"
     icon: "mdi:lightbulb"
 
   front:
-    name: "Fireplace Front Flame"
+    name: "Front Flame"
     icon: "mdi:fire"
 
   thermostat:
-    name: "Fireplace Thermostat Mode"
+    name: "Thermostat Mode"
     icon: "mdi:thermostat"
 
   # Home Assistant can't change the settings above - the remote owns them. It can
   # only force the power off: while the override is on, every frame is sent with
   # power off. It releases itself when the remote next sends power off.
   override:
-    name: "Fireplace Power Override"
+    name: "Power Override"
     icon: "mdi:fireplace-off"
 
   # Engages the override (sends power off). For automations, e.g. "at midnight,
-  # if Fireplace Power is on, press Fireplace Force Off".
+  # if Power is on, press Force Off".
   force_off:
-    name: "Fireplace Force Off"
+    name: "Force Off"
     icon: "mdi:fireplace-off"
 
-sensor:
-  - platform: wifi_signal
-    name: "Fireplace WiFi Signal"
-    update_interval: 60s
-  - platform: uptime
-    name: "Fireplace Uptime"
+  # Re-sends the current state (power off while the override is engaged). Does
+  # nothing until the remote has sent a state - see "State Valid".
+  sync:
+    name: "Sync State"
+    icon: "mdi:sync"
 
-binary_sensor:
-  - platform: status
-    name: "Fireplace Connection Status"
-
-button:
-  - platform: restart
-    name: "Fireplace Controller Restart"
-    icon: "mdi:restart"
-
-text_sensor:
-  - platform: version
-    name: "Fireplace ESPHome Version"
-  - platform: wifi_info
-    ip_address:
-      name: "Fireplace IP Address"
-    ssid:
-      name: "Fireplace Connected SSID"
-
-web_server:
-  port: 80
-  auth:
-    username: admin
-    password: !secret web_password
-
-time:
-  - platform: homeassistant
-    id: homeassistant_time
-
-
+  # On once the remote has sent a state, i.e. once Sync State has something to send.
+  state_valid:
+    name: "State Valid"
+    entity_category: diagnostic

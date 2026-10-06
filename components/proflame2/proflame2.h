@@ -93,6 +93,11 @@ class ProFlame2Component : public Component,
     // the remote's last state, so the fireplace follows the remote again right away.
     void set_override(bool engaged);
     bool is_override_engaged() const { return this->override_; }
+    // Re-send the current state (with the override applied), e.g. after the fireplace
+    // missed a frame or was changed with the paired remote. A no-op until the external
+    // remote has sent a state: the boot defaults are not a real state.
+    void sync_state();
+    bool is_state_valid() const { return this->state_valid_; }
 
     // Read-only state entities
     void set_power_sensor(binary_sensor::BinarySensor *s) { this->power_sensor_ = s; }
@@ -100,6 +105,7 @@ class ProFlame2Component : public Component,
     void set_aux_sensor(binary_sensor::BinarySensor *s) { this->aux_sensor_ = s; }
     void set_front_sensor(binary_sensor::BinarySensor *s) { this->front_sensor_ = s; }
     void set_thermostat_sensor(binary_sensor::BinarySensor *s) { this->thermostat_sensor_ = s; }
+    void set_state_valid_sensor(binary_sensor::BinarySensor *s) { this->state_valid_sensor_ = s; }
     void set_flame_sensor(sensor::Sensor *s) { this->flame_sensor_ = s; }
     void set_fan_sensor(sensor::Sensor *s) { this->fan_sensor_ = s; }
     void set_light_sensor(sensor::Sensor *s) { this->light_sensor_ = s; }
@@ -146,10 +152,14 @@ class ProFlame2Component : public Component,
     struct SavedState {
         ProFlame2Command state;
         bool override_engaged;
+        bool state_valid;
     };
     void save_state_();
     ESPPreferenceObject pref_;
     bool override_{false};
+    // current_state_ came from the external remote (now or before a reboot), so
+    // sync_state() has something real to send.
+    bool state_valid_{false};
 
     // Configuration
     uint32_t serial_number_{0x12345678};  // 24 bits used; must be cloned from the paired remote
@@ -173,6 +183,7 @@ class ProFlame2Component : public Component,
     binary_sensor::BinarySensor *aux_sensor_{nullptr};
     binary_sensor::BinarySensor *front_sensor_{nullptr};
     binary_sensor::BinarySensor *thermostat_sensor_{nullptr};
+    binary_sensor::BinarySensor *state_valid_sensor_{nullptr};
 
     sensor::Sensor *flame_sensor_{nullptr};
     sensor::Sensor *fan_sensor_{nullptr};
@@ -210,6 +221,12 @@ class ProFlame2OverrideSwitch : public switch_::Switch, public Parented<ProFlame
 class ProFlame2ForceOffButton : public button::Button, public Parented<ProFlame2Component> {
  protected:
     void press_action() override { this->parent_->set_override(true); }
+};
+
+// Re-sends the current state. Does nothing until the remote has sent one.
+class ProFlame2SyncButton : public button::Button, public Parented<ProFlame2Component> {
+ protected:
+    void press_action() override { this->parent_->sync_state(); }
 };
 
 }  // namespace proflame2

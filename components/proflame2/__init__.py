@@ -8,7 +8,8 @@ from esphome.const import CONF_ID, STATE_CLASS_MEASUREMENT
 # The optional `receive:` block also listens on a remote_receiver for a second ProFlame 2
 # remote and re-sends its commands under our own serial number (remote proxy).
 # The remote owns the fireplace state: Home Assistant sees it through read-only
-# sensors and can only force the power off (the override switch / force-off button).
+# sensors and can only force the power off (the override switch / force-off button) or
+# re-send the remote's last state (the sync button).
 DEPENDENCIES = ["remote_transmitter"]
 AUTO_LOAD = ["binary_sensor", "button", "sensor", "switch"]
 
@@ -26,6 +27,9 @@ ProFlame2OverrideSwitch = proflame2_ns.class_(
 ProFlame2ForceOffButton = proflame2_ns.class_(
     "ProFlame2ForceOffButton", button.Button, cg.Parented.template(ProFlame2Component)
 )
+ProFlame2SyncButton = proflame2_ns.class_(
+    "ProFlame2SyncButton", button.Button, cg.Parented.template(ProFlame2Component)
+)
 
 CONF_SERIAL_NUMBER = "serial_number"
 CONF_POWER = "power"
@@ -38,6 +42,8 @@ CONF_FAN = "fan"
 CONF_LIGHT = "light"
 CONF_OVERRIDE = "override"
 CONF_FORCE_OFF = "force_off"
+CONF_SYNC = "sync"
+CONF_STATE_VALID = "state_valid"
 # Error-detection word constants (4-bit each). Device specific: derive them from an
 # rtl_433 capture of the paired remote (see README "Checksum Constants"). Defaults are the
 # smartfire reference device's values.
@@ -99,6 +105,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_LIGHT): LEVEL_SCHEMA,
             cv.Optional(CONF_OVERRIDE): switch.switch_schema(ProFlame2OverrideSwitch),
             cv.Optional(CONF_FORCE_OFF): button.button_schema(ProFlame2ForceOffButton),
+            cv.Optional(CONF_SYNC): button.button_schema(ProFlame2SyncButton),
+            cv.Optional(CONF_STATE_VALID): binary_sensor.binary_sensor_schema(),
             cv.Optional(CONF_RECEIVE): RECEIVE_SCHEMA,
         }
     )
@@ -114,6 +122,7 @@ BINARY_SENSOR_TYPES = {
     CONF_AUX: "set_aux_sensor",
     CONF_FRONT: "set_front_sensor",
     CONF_THERMOSTAT: "set_thermostat_sensor",
+    CONF_STATE_VALID: "set_state_valid_sensor",
 }
 
 SENSOR_TYPES = {
@@ -166,6 +175,7 @@ async def to_code(config):
         await cg.register_parented(sw, var)
         cg.add(var.set_override_switch(sw))
 
-    if CONF_FORCE_OFF in config:
-        btn = await button.new_button(config[CONF_FORCE_OFF])
-        await cg.register_parented(btn, var)
+    for key in (CONF_FORCE_OFF, CONF_SYNC):
+        if key in config:
+            btn = await button.new_button(config[key])
+            await cg.register_parented(btn, var)

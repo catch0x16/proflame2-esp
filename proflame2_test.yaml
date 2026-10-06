@@ -126,6 +126,17 @@ proflame2:
     name: "Fireplace Force Off"
     icon: "mdi:fireplace-off"
 
+  # Re-sends the current state (power off while the override is engaged). Does
+  # nothing until the remote has sent a state - see "Fireplace State Valid".
+  sync:
+    name: "Fireplace Sync State"
+    icon: "mdi:sync"
+
+  # On once the remote has sent a state, i.e. once Sync State has something to send.
+  state_valid:
+    name: "Fireplace State Valid"
+    entity_category: diagnostic
+
 sensor:
   - platform: wifi_signal
     name: "Fireplace WiFi Signal"

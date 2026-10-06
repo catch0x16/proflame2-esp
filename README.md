@@ -193,6 +193,12 @@ proflame2:
 
   force_off:
     name: "Fireplace Force Off"
+
+  sync:
+    name: "Fireplace Sync State"
+
+  state_valid:
+    name: "Fireplace State Valid"
 ```
 
 ### Checksum Constants (IMPORTANT)
@@ -269,8 +275,12 @@ Assistant shows them read-only:
   `binary_sensor.fireplace_thermostat_mode`
 - `sensor.fireplace_flame_height`, `sensor.fireplace_fan_speed`,
   `sensor.fireplace_light_level` - Levels (0-6)
+- `binary_sensor.fireplace_state_valid` - On once the remote has sent a state
+  (saved to flash, so it stays on across reboots). Until then the settings
+  above are boot defaults, not a real state.
 
-The only thing Home Assistant can do is turn the fireplace off:
+Home Assistant can't change the settings. It can only turn the fireplace off
+or re-send what the remote last asked for:
 
 - `switch.fireplace_power_override` - While on, every frame is sent with power
   off, including the remote's periodic re-sends of its last state. All other
@@ -279,6 +289,10 @@ The only thing Home Assistant can do is turn the fireplace off:
   charge. Turning it off by hand re-sends the remote's last state right away,
   which can turn the fireplace back on.
 - `button.fireplace_force_off` - Turns the override on (and so sends power off).
+- `button.fireplace_sync_state` - Re-sends the current state as shown above
+  (power off while the override is engaged), e.g. after the fireplace missed a
+  frame or was changed with the paired remote. Does nothing, and logs a warning,
+  while `binary_sensor.fireplace_state_valid` is off.
 
 The override is saved to flash, so a reboot doesn't release it.
 
@@ -501,6 +515,9 @@ For issues, questions, or contributions:
   The remote owns the state
 - Power override switch (`override:`) and force-off button (`force_off:`). They force
   power off until the remote next sends power off
+- Sync button (`sync:`) re-sends the current state; `state_valid:` binary sensor
+  shows whether the remote has sent one yet (the button does nothing until it has).
+  Saved state format changed, so the last state is not restored once after upgrading
 - Remote proxy: optional `receive:` block decodes frames from an external
   remote on a `remote_receiver` and re-sends them with the local serial and
   checksum constants
